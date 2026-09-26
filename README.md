@@ -107,6 +107,7 @@ The following limits are defined as `pub const` in `lib.rs` and re-exported from
 | Constant | Value | Meaning |
 |---|---|---|
 | `MAX_BENEFICIARIES` | `10` | Maximum number of beneficiaries per will |
+| `MAX_GUARDIAN_WEIGHT` | `1000000` | Maximum vote weight a single guardian may be given via `update_guardians_weighted`. A weight of `0` is normalised to `1` |
 | `MAX_GUARDIANS` | `3` | Maximum number of guardians per will (private to the crate, not exported) |
 | `GUARDIAN_THRESHOLD` | `2` | Default number of guardian votes required to force an early release (private to the crate, not exported) |
 
