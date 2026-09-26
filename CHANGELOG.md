@@ -19,6 +19,11 @@ gets its own [contract spec artifact](./spec) once exported.
 
 ### Fixed
 
+- `update_periods` now emits a `periodu` `next_deadline` of
+  `last_checkin + checkin_period_days` — the deadline `trigger_will` actually
+  enforces — instead of `now + checkin_period_days`. Off-chain consumers that
+  display or schedule reminders from the event are no longer told a deadline
+  that is later than the true one by the age of the current check-in (#357).
 - `release_inheritance` now requires `now` to be *strictly greater* than the
   grace deadline, so the deadline second belongs to the owner's
   `emergency_checkin` and exactly one of the two entry points succeeds at any
