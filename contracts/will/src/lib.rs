@@ -160,6 +160,13 @@ mod issue_299_test;
 #[cfg(test)]
 mod issue_guardian_vote_underflow_test;
 
+/// Regression tests for issue #377: `split_will` only filtered the source
+/// beneficiary list, so any address and allocation the caller passed in became
+/// a beneficiary of the child even when it was never on the source, and the
+/// child's allocations came from the caller rather than the source entries.
+#[cfg(test)]
+mod issue_377_test;
+
 // The following test modules exist as files but were never wired into this
 // module tree by the PRs that added them, so they silently never compiled or
 // ran under `cargo test`.
@@ -2699,7 +2706,12 @@ impl WillContract {
     /// - `will_id`: the source will to split from.
     /// - `owner`: must be the primary owner of the source will.
     /// - `beneficiaries_to_split`: subset of beneficiaries to move to the new will.
-    ///   Their percentages will be renormalised to sum to 100 in the child will.
+    ///   Every address must already be a beneficiary of the source will, must
+    ///   not be repeated, and the list may hold at most
+    ///   [`MAX_BENEFICIARIES`] entries. The `Allocation` on each entry is
+    ///   **ignored**: the child's allocation is the source will's entry for
+    ///   that address, renormalised to sum to 10,000 bps across the child list.
+    ///   The entry exists only to name the addresses to move.
     /// - `tokens`: `(token_address, amount)` pairs to move from the source
     ///   will's balances into the child will, mirroring `create_will`'s
     ///   multi-token API. Each `amount` must be > 0 and no greater than what
@@ -2714,10 +2726,15 @@ impl WillContract {
     /// # Panics
     /// - [`WillError::NotOwner`] / [`WillError::WillNotActive`]
     /// - [`WillError::TooManyBeneficiaries`] if `tokens` is empty or exceeds
-    ///   `MAX_TOKENS`.
+    ///   `MAX_TOKENS`, or if `beneficiaries_to_split` exceeds
+    ///   [`MAX_BENEFICIARIES`].
     /// - [`WillError::ZeroAmount`] if any token amount is not positive.
     /// - [`WillError::InsufficientBalance`] if a requested token amount
     ///   exceeds what the source will holds of that token.
+    /// - [`WillError::BeneficiaryNotFound`] if an address in
+    ///   `beneficiaries_to_split` is not a beneficiary of the source will.
+    /// - [`WillError::DuplicateBeneficiary`] if an address appears more than
+    ///   once in `beneficiaries_to_split`.
     /// - [`WillError::InvalidSplit`] if `beneficiaries_to_split` is empty or would
     ///   leave the source will with no beneficiaries.
     /// - [`WillError::FixedAmountExceedsBalance`] if either the remaining or
@@ -2758,14 +2775,43 @@ impl WillContract {
             }
         }
 
-        // Build a set of addresses being split out to verify they exist in the
-        // source will and remove them from it.
+        // Build the child's beneficiary list from the SOURCE will's entries.
+        //
+        // `beneficiaries_to_split` is a request to move addresses, not to
+        // invent them: the comment above this block used to claim it verified
+        // the addresses exist on the source, but it only filtered the source
+        // list, so any address and allocation the caller passed in became a
+        // beneficiary of the child even when it was never on the source (#377).
+        // The allocation used for the child is therefore the source entry's,
+        // not the caller's; percentages are renormalised afterwards.
+        if beneficiaries_to_split.len() > MAX_BENEFICIARIES {
+            panic_with_error!(&env, WillError::TooManyBeneficiaries);
+        }
+
+        // A repeated address would silently collapse in the filter below and
+        // leave the source and child disagreeing about how many beneficiaries
+        // moved, so reject it up front.
+        for (i, s) in beneficiaries_to_split.iter().enumerate() {
+            for other in beneficiaries_to_split.iter().skip(i + 1) {
+                if s.address == other.address {
+                    panic_with_error!(&env, WillError::DuplicateBeneficiary);
+                }
+            }
+            if !names_address(&source.beneficiaries, &s.address) {
+                panic_with_error!(&env, WillError::BeneficiaryNotFound);
+            }
+        }
+
         let mut remaining_beneficiaries: Vec<Beneficiary> = Vec::new(&env);
+        let mut source_split: Vec<Beneficiary> = Vec::new(&env);
         for b in source.beneficiaries.iter() {
             let mut being_split = false;
             for s in beneficiaries_to_split.iter() {
                 if s.address == b.address {
                     being_split = true;
+                    // Take the allocation from the source entry, not the
+                    // caller-supplied one.
+                    source_split.push_back(b.clone());
                     break;
                 }
             }
@@ -2782,7 +2828,7 @@ impl WillContract {
         // Renormalise each side's `Allocation::Percentage` entries so they sum
         // to 10,000 bps again; `FixedAmount` entries pass through unchanged.
         let normalised_remaining = renormalize_percentages(&env, &remaining_beneficiaries);
-        let normalised_split = renormalize_percentages(&env, &beneficiaries_to_split);
+        let normalised_split = renormalize_percentages(&env, &source_split);
 
         // Move every requested token amount out of the source's balances and
         // into the child's. `token`/`balance` mirror the primary (first)

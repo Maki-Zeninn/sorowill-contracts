@@ -10,6 +10,15 @@ gets its own [contract spec artifact](./spec) once exported.
 
 ## [Unreleased]
 
+### Fixed
+
+- `split_will` now verifies that every address in `beneficiaries_to_split` is
+  already a beneficiary of the source will (`WillError::BeneficiaryNotFound`),
+  rejects a repeated address (`WillError::DuplicateBeneficiary`), bounds the
+  child list by `MAX_BENEFICIARIES` (`WillError::TooManyBeneficiaries`), and
+  takes each child's allocation from the source will's entry rather than from
+  the caller-supplied one.
+
 ### Removed
 
 - Removed unused `InvalidPercentage` (code 22) error variant from `WillError`.
