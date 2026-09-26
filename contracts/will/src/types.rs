@@ -100,11 +100,26 @@ pub struct HashedBeneficiary {
 /// Lifecycle state of a will.
 ///
 /// ```text
-/// Active --(missed check-in)--> Triggered --(grace period expires)--> Released --(close_will)--> Settled
-///   |                               |
-///   |--(cancel_will)--> Cancelled   |--(emergency_checkin)--> Active
-///   |--(partial_release)--> Active  (balance reduced, subset paid)
+/// create_will --(confirmation delay)--> PendingConfirmation
+/// create_will --(no delay)------------> Active
+///     |                                    |
+///     |--(confirm_will)--> Active <--------+
+///     |
+///     |   Active --(missed check-in / trigger_will)--> Triggered
+///     |      |                                            |
+///     |      |--(cancel_will)--> Cancelled               |--(grace period expires)--> Released
+///     |      |                                            |    |
+///     |      |--(emergency_checkin)--> Active            |    |--(close_will)--> Settled
+///     |      |--(guardian_cancel_trigger)--> Active       |    |
+///     |      |--(guardian_trigger quorum)--> Released ----+    |
+///     |                                                          |
+///     +--(cancel_will)--> Cancelled <--(cancel_will, PendingConfirmation)
+///
+/// PendingConfirmation --(cancel_will)--> Cancelled
 /// ```
+///
+/// Every arrow above is a real transition performed by the named entry point;
+/// `check_in` and the other settings updates do not change `status`.
 #[contracttype]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WillStatus {
