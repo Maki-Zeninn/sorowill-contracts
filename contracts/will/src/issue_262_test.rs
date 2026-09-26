@@ -51,7 +51,11 @@ fn clone_will_rejects_a_new_owner_who_is_a_source_guardian() {
     // end up as their own will's guardian, exactly what assert_valid_guardians
     // rejects for every other creation path.
     assert_eq!(
-        client.try_clone_will(&source_id, &guardian, &vec![&env, (token_address, 500_000_i128)]),
+        client.try_clone_will(
+            &source_id,
+            &guardian,
+            &vec![&env, (token_address, 500_000_i128)]
+        ),
         Err(Ok(WillError::OwnerCannotBeGuardian.into()))
     );
 }

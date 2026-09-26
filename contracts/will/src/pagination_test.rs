@@ -15,7 +15,13 @@ use crate::{Allocation, Beneficiary, WillContract, WillContractClient};
 #[allow(dead_code)]
 const DAY: u64 = 86_400;
 
-fn setup<'a>() -> (Env, WillContractClient<'a>, Address, TokenClient<'a>, Address) {
+fn setup<'a>() -> (
+    Env,
+    WillContractClient<'a>,
+    Address,
+    TokenClient<'a>,
+    Address,
+) {
     let env = Env::default();
     env.mock_all_auths();
     env.ledger().set_timestamp(1_700_000_000);
@@ -28,7 +34,13 @@ fn setup<'a>() -> (Env, WillContractClient<'a>, Address, TokenClient<'a>, Addres
     let contract_id = env.register(WillContract, ());
     let client = WillContractClient::new(&env, &contract_id);
 
-    (env.clone(), client, owner, TokenClient::new(&env, &token_address), token_address)
+    (
+        env.clone(),
+        client,
+        owner,
+        TokenClient::new(&env, &token_address),
+        token_address,
+    )
 }
 
 #[test]
@@ -64,7 +76,8 @@ fn pagination_respects_limit_parameter() {
     assert_eq!(first_page.len(), 2);
 
     // Fetch with cursor pointing to second page
-    let second_page = client.get_wills_by_beneficiary(&beneficiary, &first_page.get(1).map(|w| w.id), &2);
+    let second_page =
+        client.get_wills_by_beneficiary(&beneficiary, &first_page.get(1).map(|w| w.id), &2);
     assert_eq!(second_page.len(), 2);
 
     // Verify no duplicates between pages

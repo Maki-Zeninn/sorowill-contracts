@@ -25,7 +25,13 @@ type BatchWillSpec = (
     u32,
 );
 
-fn setup<'a>() -> (Env, WillContractClient<'a>, Address, TokenClient<'a>, Address) {
+fn setup<'a>() -> (
+    Env,
+    WillContractClient<'a>,
+    Address,
+    TokenClient<'a>,
+    Address,
+) {
     let env = Env::default();
     env.mock_all_auths();
     env.ledger().set_timestamp(1_700_000_000);
@@ -38,7 +44,13 @@ fn setup<'a>() -> (Env, WillContractClient<'a>, Address, TokenClient<'a>, Addres
     let contract_id = env.register(WillContract, ());
     let client = WillContractClient::new(&env, &contract_id);
 
-    (env.clone(), client, owner, TokenClient::new(&env, &token_address), token_address)
+    (
+        env.clone(),
+        client,
+        owner,
+        TokenClient::new(&env, &token_address),
+        token_address,
+    )
 }
 
 /// Issue #191: Regression test asserting `active_will_count` increases after `clone_will`.
@@ -59,7 +71,17 @@ fn issue_191_clone_will_increments_active_count() {
     let initial_stats = client.get_protocol_stats();
     let initial_count = initial_stats.active_will_count;
 
-    let source_will_id = client.create_will(&owner, &tokens, &beneficiaries, &90, &7, &vec![&env], &2, &None, &0);
+    let source_will_id = client.create_will(
+        &owner,
+        &tokens,
+        &beneficiaries,
+        &90,
+        &7,
+        &vec![&env],
+        &2,
+        &None,
+        &0,
+    );
 
     let stats_after_create = client.get_protocol_stats();
     assert_eq!(stats_after_create.active_will_count, initial_count + 1);
@@ -68,7 +90,11 @@ fn issue_191_clone_will_increments_active_count() {
     let _cloned_will_id = client.clone_will(&source_will_id, &owner, &clone_tokens);
 
     let stats_after_clone = client.get_protocol_stats();
-    assert_eq!(stats_after_clone.active_will_count, initial_count + 2, "clone_will should increment active_will_count");
+    assert_eq!(
+        stats_after_clone.active_will_count,
+        initial_count + 2,
+        "clone_will should increment active_will_count"
+    );
 }
 
 /// Issue #192: Regression test asserting `active_will_count` increases by the batch size.
@@ -88,9 +114,12 @@ fn issue_192_batch_create_wills_increments_active_count() {
         },
     ];
 
-    let spec1_tokens: SorobanVec<(Address, i128)> = vec![&env, (token_address.clone(), 100_000_i128)];
-    let spec2_tokens: SorobanVec<(Address, i128)> = vec![&env, (token_address.clone(), 50_000_i128)];
-    let spec3_tokens: SorobanVec<(Address, i128)> = vec![&env, (token_address.clone(), 75_000_i128)];
+    let spec1_tokens: SorobanVec<(Address, i128)> =
+        vec![&env, (token_address.clone(), 100_000_i128)];
+    let spec2_tokens: SorobanVec<(Address, i128)> =
+        vec![&env, (token_address.clone(), 50_000_i128)];
+    let spec3_tokens: SorobanVec<(Address, i128)> =
+        vec![&env, (token_address.clone(), 75_000_i128)];
 
     let specs: SorobanVec<BatchWillSpec> = vec![
         &env,
@@ -128,7 +157,17 @@ fn issue_194_get_wills_by_owner_and_status_with_pagination() {
     for i in 0..5 {
         let amount = 100_000 + (i as i128) * 10_000;
         let tokens: SorobanVec<(Address, i128)> = vec![&env, (token_address.clone(), amount)];
-        let will_id = client.create_will(&owner, &tokens, &beneficiaries, &90, &7, &vec![&env], &2, &None, &0);
+        let will_id = client.create_will(
+            &owner,
+            &tokens,
+            &beneficiaries,
+            &90,
+            &7,
+            &vec![&env],
+            &2,
+            &None,
+            &0,
+        );
         created_ids.push_back(will_id);
     }
 
@@ -138,19 +177,31 @@ fn issue_194_get_wills_by_owner_and_status_with_pagination() {
 
     if !page1.is_empty() {
         let last_id_page1 = page1.get_unchecked(page1.len() - 1).id;
-        let page2 = client.get_wills_by_owner_and_status(&owner, &WillStatus::Active, &Some(last_id_page1), &2);
+        let page2 = client.get_wills_by_owner_and_status(
+            &owner,
+            &WillStatus::Active,
+            &Some(last_id_page1),
+            &2,
+        );
         assert!(!page2.is_empty(), "Second page should have results");
         assert!(page2.len() <= 2, "Second page should respect limit");
 
         if !page2.is_empty() {
             let first_page2_id = page2.get_unchecked(0).id;
-            assert!(first_page2_id > last_id_page1, "Pagination cursor should work correctly");
+            assert!(
+                first_page2_id > last_id_page1,
+                "Pagination cursor should work correctly"
+            );
         }
     }
 
     // Test total count across pages (large limit)
     let all_wills = client.get_wills_by_owner_and_status(&owner, &WillStatus::Active, &None, &50);
-    assert_eq!(all_wills.len(), 5, "Should get all 5 wills when limit is large enough");
+    assert_eq!(
+        all_wills.len(),
+        5,
+        "Should get all 5 wills when limit is large enough"
+    );
 }
 
 /// Issue #193: Regression test for cursor pagination with beneficiary removal/re-addition.
@@ -173,13 +224,33 @@ fn issue_193_paginate_with_remove_readd_beneficiary() {
     ];
 
     let tokens: SorobanVec<(Address, i128)> = vec![&env, (token_address.clone(), 200_000_i128)];
-    let will_id = client.create_will(&owner, &tokens, &initial_beneficiaries, &90, &7, &vec![&env], &2, &None, &0);
+    let will_id = client.create_will(
+        &owner,
+        &tokens,
+        &initial_beneficiaries,
+        &90,
+        &7,
+        &vec![&env],
+        &2,
+        &None,
+        &0,
+    );
 
     // Create multiple more wills to test pagination
     for i in 0..3 {
         let amount = 100_000 + (i as i128) * 10_000;
         let tokens: SorobanVec<(Address, i128)> = vec![&env, (token_address.clone(), amount)];
-        let _will_id = client.create_will(&owner, &tokens, &initial_beneficiaries, &90, &7, &vec![&env], &2, &None, &0);
+        let _will_id = client.create_will(
+            &owner,
+            &tokens,
+            &initial_beneficiaries,
+            &90,
+            &7,
+            &vec![&env],
+            &2,
+            &None,
+            &0,
+        );
     }
 
     // Remove beneficiary2 from first will
@@ -213,7 +284,11 @@ fn issue_193_paginate_with_remove_readd_beneficiary() {
         for will in page1.iter() {
             ids_in_pages.push_back(will.id);
         }
-        assert_eq!(ids_in_pages.len(), page1.len(), "Should retrieve all beneficiary wills without gaps");
+        assert_eq!(
+            ids_in_pages.len(),
+            page1.len(),
+            "Should retrieve all beneficiary wills without gaps"
+        );
     }
 }
 
@@ -249,7 +324,8 @@ fn stale_guardian_vote_cleared_when_guardian_removed() {
     client.accept_guardian_role(&will_id, &guardian);
 
     // Guardian-list cooldown must elapse before a trigger vote is accepted.
-    env.ledger().set_timestamp(env.ledger().timestamp() + 8 * DAY);
+    env.ledger()
+        .set_timestamp(env.ledger().timestamp() + 8 * DAY);
 
     client.guardian_trigger(&will_id, &guardian, &GuardianVoteReason::Other);
     assert!(client

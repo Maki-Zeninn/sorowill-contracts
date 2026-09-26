@@ -123,7 +123,10 @@ fn clone_gets_a_fresh_id_and_checkin_deadline() {
         saw_source |= will.id == source_id;
         saw_clone |= will.id == clone_id;
     }
-    assert!(saw_source, "the source will is missing from the owner index");
+    assert!(
+        saw_source,
+        "the source will is missing from the owner index"
+    );
     assert!(saw_clone, "the cloned will is missing from the owner index");
 }
 

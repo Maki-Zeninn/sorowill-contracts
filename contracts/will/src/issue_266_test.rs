@@ -38,9 +38,18 @@ fn split_will_rejects_a_renormalised_share_that_rounds_to_zero() {
         &vec![&env, (token_address.clone(), 1_000_000_i128)],
         &vec![
             &env,
-            Beneficiary { address: a.clone(), allocation: Allocation::Percentage(100) },
-            Beneficiary { address: b.clone(), allocation: Allocation::Percentage(100) },
-            Beneficiary { address: c.clone(), allocation: Allocation::Percentage(9_800) },
+            Beneficiary {
+                address: a.clone(),
+                allocation: Allocation::Percentage(100),
+            },
+            Beneficiary {
+                address: b.clone(),
+                allocation: Allocation::Percentage(100),
+            },
+            Beneficiary {
+                address: c.clone(),
+                allocation: Allocation::Percentage(9_800),
+            },
         ],
         &90,
         &7,
@@ -54,8 +63,14 @@ fn split_will_rejects_a_renormalised_share_that_rounds_to_zero() {
     // 1 : 999_999 rescales `a`'s share to floor(1 * 10_000 / 1_000_000) = 0.
     let skewed_split = vec![
         &env,
-        Beneficiary { address: a, allocation: Allocation::Percentage(1) },
-        Beneficiary { address: b, allocation: Allocation::Percentage(999_999) },
+        Beneficiary {
+            address: a,
+            allocation: Allocation::Percentage(1),
+        },
+        Beneficiary {
+            address: b,
+            allocation: Allocation::Percentage(999_999),
+        },
     ];
 
     assert_eq!(

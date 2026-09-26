@@ -13,9 +13,13 @@ contributors can tell "intentional legacy shim" from "bug."
 - `balances: Map<Address, i128>` — the authoritative multi-token source of
   truth, populated from the `tokens: Vec<(Address, i128)>` list passed to
   `create_will`.
-- `token: Address` and `balance: i128` — a single-token mirror that always
-  reflects the **first** entry of `tokens` (see `create_will`, where
-  `let (primary_token, primary_balance) = tokens.get_unchecked(0);`).
+- `token: Address` and `balance: i128` — a single-token mirror whose token is
+  the **first** entry of `tokens` and whose amount is **derived from the
+  accumulated `balances` map** (`balances.get(primary_token)`), so the mirror
+  can never disagree with `balances[token]`. `create_will` also rejects a
+  `tokens` list containing the same address twice with
+  `WillError::DuplicateToken` (#350), since a duplicate would make "first
+  entry" an ambiguous definition for the mirror.
 
 Multi-token support (`balances`) was added after the contract's original
 single-token design (`token`/`balance`). Rather than migrating every entry
@@ -26,13 +30,13 @@ immediately.
 ## Why keep the mirror instead of migrating everything at once
 
 - **Several entry points were never generalized to multi-token and still
-  read only the mirror**: `cancel_will` refunds via `will.balance` /
-  `will.token` (see the `storage::adjust_locked_value(&env, &will.token,
-  -refund)` call), and `reveal_and_claim` computes a claimant's share as
+  read only the mirror**: `reveal_and_claim` computes a claimant's share as
   `will.balance * percentage / 100` and transfers via `will.token` alone,
   never touching `balances`. Removing the mirror without first rewriting
   these to iterate `balances` would silently break every will with more than
-  one locked token at these entry points.
+  one locked token at these entry points. (`cancel_will` was migrated to
+  refund and decrement locked value for every entry in `balances` in #353,
+  so it no longer depends on the mirror for its payouts.)
 - **`merge_wills` and `split_will` also key off the mirror** for their
   headline balance math (`combined_balance = will_a.balance +
   will_b.balance` in `merge_wills`), while separately combining the

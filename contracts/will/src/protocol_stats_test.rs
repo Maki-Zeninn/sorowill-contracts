@@ -12,8 +12,13 @@ use soroban_sdk::{
 
 use crate::{Allocation, Beneficiary, WillContract, WillContractClient};
 
-
-fn setup<'a>() -> (Env, WillContractClient<'a>, Address, TokenClient<'a>, Address) {
+fn setup<'a>() -> (
+    Env,
+    WillContractClient<'a>,
+    Address,
+    TokenClient<'a>,
+    Address,
+) {
     let env = Env::default();
     env.mock_all_auths();
     env.ledger().set_timestamp(1_700_000_000);
@@ -26,7 +31,13 @@ fn setup<'a>() -> (Env, WillContractClient<'a>, Address, TokenClient<'a>, Addres
     let contract_id = env.register(WillContract, ());
     let client = WillContractClient::new(&env, &contract_id);
 
-    (env.clone(), client, owner, TokenClient::new(&env, &token_address), token_address)
+    (
+        env.clone(),
+        client,
+        owner,
+        TokenClient::new(&env, &token_address),
+        token_address,
+    )
 }
 
 #[test]
@@ -55,12 +66,16 @@ fn create_will_increments_locked_value() {
 
     // Get protocol stats after first create
     let stats_1 = client.get_protocol_stats();
-    let locked_1 = stats_1.total_locked_by_token
+    let locked_1 = stats_1
+        .total_locked_by_token
         .iter()
         .find(|e| e.token == token_address)
         .map(|e| e.total_locked)
         .unwrap_or(0);
-    assert_eq!(locked_1, 100_000, "First will should increment locked value");
+    assert_eq!(
+        locked_1, 100_000,
+        "First will should increment locked value"
+    );
 
     // Create second will with same token
     let _will_id_2 = client.create_will(
@@ -83,12 +98,16 @@ fn create_will_increments_locked_value() {
 
     // Verify cumulative locked value
     let stats_2 = client.get_protocol_stats();
-    let locked_2 = stats_2.total_locked_by_token
+    let locked_2 = stats_2
+        .total_locked_by_token
         .iter()
         .find(|e| e.token == token_address)
         .map(|e| e.total_locked)
         .unwrap_or(0);
-    assert_eq!(locked_2, 350_000, "Second will should add to cumulative locked value");
+    assert_eq!(
+        locked_2, 350_000,
+        "Second will should add to cumulative locked value"
+    );
 }
 
 #[test]
@@ -117,7 +136,8 @@ fn top_up_increments_locked_value() {
 
     // Get initial locked value
     let stats_before = client.get_protocol_stats();
-    let locked_before = stats_before.total_locked_by_token
+    let locked_before = stats_before
+        .total_locked_by_token
         .iter()
         .find(|e| e.token == token_address)
         .map(|e| e.total_locked)
@@ -129,12 +149,16 @@ fn top_up_increments_locked_value() {
 
     // Verify locked value increased
     let stats_after = client.get_protocol_stats();
-    let locked_after = stats_after.total_locked_by_token
+    let locked_after = stats_after
+        .total_locked_by_token
         .iter()
         .find(|e| e.token == token_address)
         .map(|e| e.total_locked)
         .unwrap_or(0);
-    assert_eq!(locked_after, 175_000, "Top-up should increment locked value");
+    assert_eq!(
+        locked_after, 175_000,
+        "Top-up should increment locked value"
+    );
 }
 
 #[test]
@@ -163,7 +187,8 @@ fn cancel_will_decrements_locked_value() {
 
     // Get locked value after create
     let stats_before = client.get_protocol_stats();
-    let locked_before = stats_before.total_locked_by_token
+    let locked_before = stats_before
+        .total_locked_by_token
         .iter()
         .find(|e| e.token == token_address)
         .map(|e| e.total_locked)
@@ -175,7 +200,8 @@ fn cancel_will_decrements_locked_value() {
 
     // Verify locked value decreased
     let stats_after = client.get_protocol_stats();
-    let locked_after = stats_after.total_locked_by_token
+    let locked_after = stats_after
+        .total_locked_by_token
         .iter()
         .find(|e| e.token == token_address)
         .map(|e| e.total_locked)
@@ -234,12 +260,14 @@ fn multiple_tokens_track_independently() {
 
     // Verify each token is tracked independently
     let stats = client.get_protocol_stats();
-    let locked_1 = stats.total_locked_by_token
+    let locked_1 = stats
+        .total_locked_by_token
         .iter()
         .find(|e| e.token == token_address)
         .map(|e| e.total_locked)
         .unwrap_or(0);
-    let locked_2 = stats.total_locked_by_token
+    let locked_2 = stats
+        .total_locked_by_token
         .iter()
         .find(|e| e.token == token_address_2)
         .map(|e| e.total_locked)

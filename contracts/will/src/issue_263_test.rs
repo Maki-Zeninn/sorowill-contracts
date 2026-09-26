@@ -11,9 +11,7 @@ use soroban_sdk::{
     vec, Address, Env,
 };
 
-use crate::{
-    Allocation, Beneficiary, GuardianVoteReason, WillContract, WillContractClient,
-};
+use crate::{Allocation, Beneficiary, GuardianVoteReason, WillContract, WillContractClient};
 
 const DAY: u64 = 86_400;
 
@@ -117,7 +115,9 @@ fn get_guardian_vote_status_returns_none_once_the_vote_expires() {
 
     env.ledger().with_mut(|l| l.timestamp += 8 * DAY);
     client.guardian_trigger(&will_id, &guardian_a, &GuardianVoteReason::Unreachable);
-    assert!(client.get_guardian_vote_status(&will_id, &guardian_a).is_some());
+    assert!(client
+        .get_guardian_vote_status(&will_id, &guardian_a)
+        .is_some());
 
     // Past the 7-day grace-period expiry, the vote no longer counts as active.
     env.ledger().with_mut(|l| l.timestamp += 8 * DAY);

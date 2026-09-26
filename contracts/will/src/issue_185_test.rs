@@ -12,7 +12,13 @@ use soroban_sdk::{
 
 use crate::{Allocation, Beneficiary, WillContract, WillContractClient};
 
-fn setup<'a>() -> (Env, WillContractClient<'a>, Address, TokenClient<'a>, Address) {
+fn setup<'a>() -> (
+    Env,
+    WillContractClient<'a>,
+    Address,
+    TokenClient<'a>,
+    Address,
+) {
     let env = Env::default();
     env.mock_all_auths();
     env.ledger().set_timestamp(1_700_000_000);
@@ -25,7 +31,13 @@ fn setup<'a>() -> (Env, WillContractClient<'a>, Address, TokenClient<'a>, Addres
     let contract_id = env.register(WillContract, ());
     let client = WillContractClient::new(&env, &contract_id);
 
-    (env.clone(), client, owner, TokenClient::new(&env, &token_address), token_address)
+    (
+        env.clone(),
+        client,
+        owner,
+        TokenClient::new(&env, &token_address),
+        token_address,
+    )
 }
 
 /// Test that add_hashed_beneficiary emits an event with the expected topics and data.
@@ -47,7 +59,17 @@ fn add_hashed_beneficiary_emits_event() {
     ];
     let tokens: SorobanVec<(Address, i128)> = vec![&env, (token_address, 1_000_000_i128)];
 
-    let will_id = client.create_will(&owner, &tokens, &beneficiaries, &90, &7, &vec![&env], &2, &None, &0);
+    let will_id = client.create_will(
+        &owner,
+        &tokens,
+        &beneficiaries,
+        &90,
+        &7,
+        &vec![&env],
+        &2,
+        &None,
+        &0,
+    );
 
     // Prepare a hashed beneficiary commitment
     let _secret_address = Address::generate(&env);
@@ -61,11 +83,17 @@ fn add_hashed_beneficiary_emits_event() {
 
     // Verify that an event was emitted
     let events = env.events().all();
-    assert!(!events.is_empty(), "add_hashed_beneficiary should emit an event");
+    assert!(
+        !events.is_empty(),
+        "add_hashed_beneficiary should emit an event"
+    );
 
     // Verify the will now contains the hashed beneficiary
     let will = client.get_will(&will_id);
-    assert!(!will.hashed_beneficiaries.is_empty(), "hashed beneficiary should be added to will");
+    assert!(
+        !will.hashed_beneficiaries.is_empty(),
+        "hashed beneficiary should be added to will"
+    );
     assert_eq!(will.hashed_beneficiaries.len(), 1);
 
     let hb = will.hashed_beneficiaries.get(0).unwrap();

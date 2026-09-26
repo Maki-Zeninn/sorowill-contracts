@@ -42,6 +42,7 @@ For example: `feat/42-guardian-quorum-check` or `fix/17-checkin-deadline-roundin
 
 Run every command used by the [Test CI workflow](./.github/workflows/test.yml) and confirm it succeeds:
 
+- [ ] `cargo fmt --all -- --check`
 - [ ] `cargo clippy --all-targets -- -D warnings`
 - [ ] `cargo test --workspace`
 - [ ] `cargo build --workspace --release --target wasm32v1-none`
@@ -102,11 +103,9 @@ closes that gap: it systematically rewrites small pieces of the contract
 the test suite against each mutant. A mutant that **survives** (tests still
 pass) means no test would have caught that bug.
 
-CI runs mutation testing automatically via `.github/workflows/mutants.yml`
-on every push and PR to `main`, but it is currently **advisory only**
-(`continue-on-error: true`) — a survived mutant does not fail the build. It
-will graduate to a blocking check once we've triaged an initial baseline
-and trust the signal.
+There is currently no CI workflow for mutation testing: it is a manual,
+advisory check you run locally (see below). A survived mutant is a signal to
+add a test, not a build failure.
 
 ### Running it locally
 
@@ -153,7 +152,7 @@ out of scope for the PR at hand.
 `fuzz/` is a separate Cargo workspace member with its own `Cargo.toml` and
 `fuzz_targets/` directory. It is excluded from the root workspace
 (`cargo test --workspace` and `cargo clippy --all-targets` never build it)
-because it requires a nightly toolchain and links against libFuzzer. Coverage-guided fuzzing runs on demand and on a nightly CI schedule.
+because it requires a nightly toolchain and links against libFuzzer. Coverage-guided fuzzing is run manually on demand; there is no scheduled CI fuzzing workflow.
 
 ### Running existing targets
 
