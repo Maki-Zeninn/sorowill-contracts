@@ -27,6 +27,13 @@ gets its own [contract spec artifact](./spec) once exported.
   `InvalidGuardianThreshold` and `TooManyBeneficiaries` so each states exactly
   when it is raised. The wording is generated into the SDK and client error
   references, which integrators rely on to interpret error codes (#389).
+- Corrected the `Will` field docs for `beneficiaries`, `hashed_beneficiaries`,
+  `guardian_threshold` and `guardian_vote_weight` in `contracts/will/src/types.rs`.
+  `beneficiaries` claimed shares "always sum to 10,000" (false once
+  `Allocation::FixedAmount` entries are allowed), `hashed_beneficiaries` used a
+  "100-sum" against the rest of the contract's 10,000 basis points, and
+  `guardian_threshold` was described as a count of distinct votes rather than a
+  comparison against accumulated weight (#388).
 
 ### Fixed
 
