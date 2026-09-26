@@ -160,6 +160,13 @@ mod issue_299_test;
 #[cfg(test)]
 mod issue_guardian_vote_underflow_test;
 
+/// Regression tests for issue #376: `clone_will` and `split_will` never
+/// recorded a create transition, so `get_will_history` was empty for the wills
+/// they produced while `create_will` / `batch_create_wills` both seed the audit
+/// trail.
+#[cfg(test)]
+mod issue_376_test;
+
 // The following test modules exist as files but were never wired into this
 // module tree by the PRs that added them, so they silently never compiled or
 // ran under `cargo test`.
@@ -2132,6 +2139,10 @@ impl WillContract {
     /// # Returns
     /// The newly allocated will id.
     ///
+    /// The clone's audit trail is seeded with a `create` transition exactly like
+    /// [`create_will`], so `get_will_history` starts with the same entry
+    /// regardless of which creation path produced the will.
+    ///
     /// # Panics
     /// - [`WillError::WillNotFound`] if the source will does not exist.
     /// - [`WillError::WillNotActive`] if the source will is not `Active` or
@@ -2230,6 +2241,18 @@ impl WillContract {
         storage::save_will(&env, &will);
         storage::index_by_owner(&env, &owner, will_id);
         storage::increment_active_will_count(&env);
+
+        // Seed the audit trail with the same `create` transition every other
+        // creation path records, so `get_will_history` starts with one entry
+        // regardless of how the will came into being (#376).
+        record_transition(
+            &env,
+            will_id,
+            WillStatus::Active,
+            WillStatus::Active,
+            &owner,
+            symbol_short!("create"),
+        );
 
         events::will_created(
             &env,
@@ -2711,6 +2734,11 @@ impl WillContract {
     /// # Returns
     /// The id of the newly created child will.
     ///
+    /// The child's audit trail is seeded with a `create` transition exactly like
+    /// [`create_will`], so `get_will_history` on the child starts with the
+    /// same entry regardless of which creation path produced it. The source
+    /// will's own history is untouched: a split is not a status change on it.
+    ///
     /// # Panics
     /// - [`WillError::NotOwner`] / [`WillError::WillNotActive`]
     /// - [`WillError::TooManyBeneficiaries`] if `tokens` is empty or exceeds
@@ -2851,6 +2879,19 @@ impl WillContract {
         storage::save_will(&env, &child);
         storage::index_by_owner(&env, &source.owner, new_id);
         storage::increment_active_will_count(&env);
+
+        // Seed the child's audit trail with the same `create` transition
+        // `create_will` and `batch_create_wills` record, so `get_will_history`
+        // starts with one entry for the child too (#376). The source keeps its
+        // own history; the split is not a status change on the source.
+        record_transition(
+            &env,
+            new_id,
+            WillStatus::Active,
+            WillStatus::Active,
+            &owner,
+            symbol_short!("create"),
+        );
 
         events::will_split(&env, will_id, new_id, &owner, primary_amount);
         events::will_created(

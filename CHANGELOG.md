@@ -10,6 +10,12 @@ gets its own [contract spec artifact](./spec) once exported.
 
 ## [Unreleased]
 
+### Fixed
+
+- `clone_will` and the child will produced by `split_will` now record a
+  `create` transition, so `get_will_history` is no longer empty for them and
+  every creation path starts its audit trail the same way.
+
 ### Removed
 
 - Removed unused `InvalidPercentage` (code 22) error variant from `WillError`.
