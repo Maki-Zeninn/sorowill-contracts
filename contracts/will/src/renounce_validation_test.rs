@@ -12,8 +12,13 @@ use soroban_sdk::{
 
 use crate::{Allocation, Beneficiary, WillContract, WillContractClient};
 
-
-fn setup<'a>() -> (Env, WillContractClient<'a>, Address, TokenClient<'a>, Address) {
+fn setup<'a>() -> (
+    Env,
+    WillContractClient<'a>,
+    Address,
+    TokenClient<'a>,
+    Address,
+) {
     let env = Env::default();
     env.mock_all_auths();
     env.ledger().set_timestamp(1_700_000_000);
@@ -26,7 +31,13 @@ fn setup<'a>() -> (Env, WillContractClient<'a>, Address, TokenClient<'a>, Addres
     let contract_id = env.register(WillContract, ());
     let client = WillContractClient::new(&env, &contract_id);
 
-    (env.clone(), client, owner, TokenClient::new(&env, &token_address), token_address)
+    (
+        env.clone(),
+        client,
+        owner,
+        TokenClient::new(&env, &token_address),
+        token_address,
+    )
 }
 
 #[test]
@@ -74,7 +85,10 @@ fn renounce_beneficiary_redistributes_percentages_validly() {
             total_bp = total_bp.saturating_add(bp);
         }
     }
-    assert_eq!(total_bp, 10_000, "Percentages must sum to 10,000 after redistribution");
+    assert_eq!(
+        total_bp, 10_000,
+        "Percentages must sum to 10,000 after redistribution"
+    );
 }
 
 #[test]
@@ -122,7 +136,10 @@ fn renounce_beneficiary_with_rounding_edge_case() {
             total_bp = total_bp.saturating_add(bp);
         }
     }
-    assert_eq!(total_bp, 10_000, "Percentages must sum to 10,000 after rounding redistribution");
+    assert_eq!(
+        total_bp, 10_000,
+        "Percentages must sum to 10,000 after rounding redistribution"
+    );
 }
 
 #[test]
@@ -165,5 +182,8 @@ fn renounce_beneficiary_single_percentage_beneficiary() {
     let will = client.get_will(&will_id);
     assert_eq!(will.beneficiaries.len(), 1);
     let remaining = &will.beneficiaries.get(0).unwrap();
-    assert!(matches!(remaining.allocation, Allocation::FixedAmount(300_000)));
+    assert!(matches!(
+        remaining.allocation,
+        Allocation::FixedAmount(300_000)
+    ));
 }

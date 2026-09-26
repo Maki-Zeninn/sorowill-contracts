@@ -59,15 +59,17 @@ everyone, regardless of which tokens their own wills use.
 
 ### Additional issue discovered during analysis
 
-`cancel_will` currently calls `adjust_locked_value` only for `will.token` (the
+`cancel_will` used to call `adjust_locked_value` only for `will.token` (the
 legacy single-token field retained for backward compatibility), not for all
-entries in `will.balances`.  For a multi-token will this means the
-`total_locked` counters for every non-primary token are **never decremented on
-cancellation**, so the aggregate totals drift upward over time.  The same
-omission may exist in `release_inheritance` / `distribute` (no call to
-`adjust_locked_value` was found there at all).  These are correctness bugs
-compounding the scalability issue: the vector grows unboundedly *and* its
-values become wrong for multi-token wills.
+entries in `will.balances`.  For a multi-token will this meant the
+`total_locked` counters for every non-primary token were **never decremented on
+cancellation**, so the aggregate totals drifted upward over time.  **Fixed in
+#353**: `cancel_will` now decrements `adjust_locked_value` for every token in
+its `balances` snapshot.  The same omission may still exist in
+`release_inheritance` / `distribute` (no call to `adjust_locked_value` was
+found there at all).  That is a correctness bug compounding the scalability
+issue: the vector grows unboundedly *and* its values stay wrong for
+multi-token wills that are released rather than cancelled.
 
 ## Decision drivers
 
@@ -164,7 +166,7 @@ practical instance-storage size limits.
 2. Rewrite `adjust_locked_value` to use a single map `get`/`set`.
 3. Fix `cancel_will` and `release_inheritance`/`distribute` to call
    `adjust_locked_value` for **every token in `will.balances`**, not just
-   `will.token`.
+   `will.token`.  (`cancel_will`'s half of this is already done — see #353.)
 4. Document a soft operational limit (e.g. "the protocol works correctly at any
    `N`; beyond ~200 distinct tokens the instance entry exceeds 8 KB and reads
    become measurably more expensive — operators should monitor `N` and consider

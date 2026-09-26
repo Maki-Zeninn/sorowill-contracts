@@ -366,7 +366,8 @@ fn profile_guardians(report: &mut Report) {
     let g_guardians = two_guardians(&g.env);
     let (g_will_id, _) = g.create(&g_guardians);
     g.advance(7 * DAY);
-    g.client.accept_guardian_role(&g_will_id, &g_guardians.get_unchecked(0));
+    g.client
+        .accept_guardian_role(&g_will_id, &g_guardians.get_unchecked(0));
     g.client
         .accept_guardian_role(&g_will_id, &g_guardians.get_unchecked(1));
     g.client.guardian_trigger(
@@ -510,8 +511,7 @@ fn assert_footprints(report: &Report) {
     // whether any votes existed to clear, so its cost floor is higher than a
     // plain check-in even when reset_guardian_votes/reset_guardian_cancel_votes
     // early-return on zero votes -- both scenarios below measure identically.
-    let update_guardians_baseline =
-        report.row("update_guardians (no votes cast)").write_entries;
+    let update_guardians_baseline = report.row("update_guardians (no votes cast)").write_entries;
     assert_eq!(
         report
             .row("update_guardians (clearing a vote)")

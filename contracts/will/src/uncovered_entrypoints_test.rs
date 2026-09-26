@@ -10,7 +10,9 @@ use soroban_sdk::{
     vec, Address, Env, Vec as SorobanVec,
 };
 
-use crate::{Allocation, Beneficiary, GuardianVoteReason, WillContract, WillContractClient, WillError};
+use crate::{
+    Allocation, Beneficiary, GuardianVoteReason, WillContract, WillContractClient, WillError,
+};
 
 fn setup<'a>() -> (Env, WillContractClient<'a>, Address, Address) {
     let env = Env::default();

@@ -47,7 +47,10 @@ fn test_all_contractimpl_entry_points_are_covered_by_tests() {
     let mut test_contents = Vec::new();
 
     if src_dir.exists() {
-        for entry in fs::read_dir(&src_dir).expect("Failed to read src dir").flatten() {
+        for entry in fs::read_dir(&src_dir)
+            .expect("Failed to read src dir")
+            .flatten()
+        {
             let path = entry.path();
             if path.is_file()
                 && path.extension().is_some_and(|ext| ext == "rs")
@@ -61,7 +64,10 @@ fn test_all_contractimpl_entry_points_are_covered_by_tests() {
     }
 
     if tests_dir.exists() {
-        for entry in fs::read_dir(&tests_dir).expect("Failed to read tests dir").flatten() {
+        for entry in fs::read_dir(&tests_dir)
+            .expect("Failed to read tests dir")
+            .flatten()
+        {
             let path = entry.path();
             if path.is_file() && path.extension().is_some_and(|ext| ext == "rs") {
                 if let Ok(content) = fs::read_to_string(&path) {
@@ -73,7 +79,9 @@ fn test_all_contractimpl_entry_points_are_covered_by_tests() {
 
     let mut uncovered = Vec::new();
     for entry_point in &entry_points {
-        let is_covered = test_contents.iter().any(|content| content.contains(entry_point));
+        let is_covered = test_contents
+            .iter()
+            .any(|content| content.contains(entry_point));
         if !is_covered {
             uncovered.push(entry_point.clone());
         }

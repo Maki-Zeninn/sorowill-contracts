@@ -12,8 +12,8 @@
 # the crate version currently declared — the case where a public signature
 # changed and the version was bumped but the export step was skipped.
 #
-# Requires: cargo, the wasm32v1-none target, stellar-cli (`cargo install
-# --locked stellar-cli --features opt`), and jq.
+# Requires: cargo, the wasm32v1-none target, stellar-cli >= 22.0.0 (`cargo install
+# --locked stellar-cli`), and jq.
 #
 # STELLAR_BIN overrides the exporter binary (used by the tests).
 set -euo pipefail
