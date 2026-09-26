@@ -19,6 +19,12 @@ gets its own [contract spec artifact](./spec) once exported.
 
 ### Fixed
 
+- Restored five `WillError` variants (`InvalidTokenCount`, `InvalidPreimageLength`,
+  `InvalidCommitmentLength`, `DuplicateCommitment`, `BatchTooLarge`) and the
+  `total_balance` helper that a bad merge had dropped, which left `main` failing
+  to compile. The variants are re-numbered 41-45 so the already-published
+  `DuplicateToken` (40) keeps its code; `README.md` and `spec/will-v0.1.0.json`
+  are updated to match.
 - `create_will` / `cancel_will` now record the will's real status in the audit
   trail instead of a hardcoded `Active`, so `get_will_history` is accurate for
   wills created with a confirmation delay and cancelled while pending (#351).

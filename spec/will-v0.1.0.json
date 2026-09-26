@@ -107,6 +107,11 @@
     { "code": 20, "name": "InvalidGuardianThreshold" },
     { "code": 38, "name": "GuardianNotConsented" },
     { "code": 39, "name": "PrimaryTokenMismatch" },
-    { "code": 40, "name": "InvalidTokenCount" }
+    { "code": 40, "name": "DuplicateToken" },
+    { "code": 41, "name": "InvalidTokenCount" },
+    { "code": 42, "name": "InvalidPreimageLength" },
+    { "code": 43, "name": "InvalidCommitmentLength" },
+    { "code": 44, "name": "DuplicateCommitment" },
+    { "code": 45, "name": "BatchTooLarge" }
   ]
 }

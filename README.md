@@ -270,7 +270,12 @@ disambiguate.
 | 37 | `TooManyWills` | An owner or beneficiary index list is already at `MAX_WILLS_PER_INDEX` and cannot accept another will id. |
 | 38 | `GuardianNotConsented` | A guardian has not accepted their role and cannot vote. |
 | 39 | `PrimaryTokenMismatch` | Cannot merge: the two wills' primary tokens differ. |
-| 40 | `InvalidTokenCount` | The token list supplied to `create_will`, `clone_will`, `split_will`, or `batch_create_wills` was empty, or contained more than `MAX_TOKENS` entries. |
+| 40 | `DuplicateToken` | The same token address was supplied more than once in a `tokens` list. |
+| 41 | `InvalidTokenCount` | The token list supplied to `create_will`, `clone_will`, `split_will`, or `batch_create_wills` was empty, or contained more than `MAX_TOKENS` entries. |
+| 42 | `InvalidPreimageLength` | `reveal_and_claim` was called with a pre-image whose length is not exactly `PREIMAGE_LENGTH` bytes. |
+| 43 | `InvalidCommitmentLength` | `add_hashed_beneficiary` was called with a `commitment` that is not exactly 32 bytes. |
+| 44 | `DuplicateCommitment` | `add_hashed_beneficiary` was called with a `commitment` already registered on this will. |
+| 45 | `BatchTooLarge` | `batch_check_in` was given more will IDs than `MAX_BATCH_CHECK_IN` (50). |
 
 ## Contract spec artifact
 

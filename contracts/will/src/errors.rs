@@ -103,4 +103,25 @@ pub enum WillError {
     /// duplicated entry would make the legacy `balance` mirror disagree with
     /// the accumulated `balances` map (#350).
     DuplicateToken = 40,
+    /// The token list supplied to `create_will`, `clone_will`, `split_will` or
+    /// `batch_create_wills` was empty, or held more than [`crate::MAX_TOKENS`]
+    /// entries. Split out from `TooManyBeneficiaries` so the two failure modes
+    /// are distinguishable by code alone (#390).
+    InvalidTokenCount = 41,
+    /// `reveal_and_claim` was called with a pre-image whose length is not
+    /// exactly [`crate::PREIMAGE_LENGTH`] bytes (32 address bytes followed by
+    /// a 32-byte salt). Checked before hashing, so a wrong-length pre-image
+    /// never reaches the commitment lookup (#370).
+    InvalidPreimageLength = 42,
+    /// `add_hashed_beneficiary` was called with a `commitment` that is not
+    /// exactly 32 bytes, so it cannot be the SHA-256 digest of any pre-image
+    /// and the reserved share would be permanently unclaimable (#371).
+    InvalidCommitmentLength = 43,
+    /// `add_hashed_beneficiary` was called with a `commitment` that is already
+    /// registered on this will. `reveal_and_claim` always matches the first
+    /// slot, so a duplicate leaves the later slot's share unclaimable (#371).
+    DuplicateCommitment = 44,
+    /// `batch_check_in` was given more will IDs than
+    /// [`crate::batch_check_in_limit::MAX_BATCH_CHECK_IN`] (#414).
+    BatchTooLarge = 45,
 }

@@ -10,13 +10,17 @@ use soroban_sdk::{
     vec, Address, Env, Vec as SorobanVec,
 };
 
-use crate::{
-    Allocation, Beneficiary, WillContract, WillContractClient, WillError, WillStatus,
-};
+use crate::{Allocation, Beneficiary, WillContract, WillContractClient, WillError, WillStatus};
 
 const DAY: u64 = 86_400;
 
-fn setup<'a>() -> (Env, WillContractClient<'a>, Address, TokenClient<'a>, Address) {
+fn setup<'a>() -> (
+    Env,
+    WillContractClient<'a>,
+    Address,
+    TokenClient<'a>,
+    Address,
+) {
     let env = Env::default();
     env.mock_all_auths();
     env.ledger().set_timestamp(1_700_000_000);
@@ -29,7 +33,13 @@ fn setup<'a>() -> (Env, WillContractClient<'a>, Address, TokenClient<'a>, Addres
     let contract_id = env.register(WillContract, ());
     let client = WillContractClient::new(&env, &contract_id);
 
-    (env.clone(), client, owner, TokenClient::new(&env, &token_address), token_address)
+    (
+        env.clone(),
+        client,
+        owner,
+        TokenClient::new(&env, &token_address),
+        token_address,
+    )
 }
 
 fn advance(env: &Env, days: u64) {
@@ -61,7 +71,17 @@ fn zero_percentage_hashed_beneficiary_is_rejected_on_a_full_percentage_list() {
         },
     ];
     let tokens: SorobanVec<(Address, i128)> = vec![&env, (token_address, 1_000_000_i128)];
-    let will_id = client.create_will(&owner, &tokens, &beneficiaries, &90, &7, &vec![&env], &2, &None, &0);
+    let will_id = client.create_will(
+        &owner,
+        &tokens,
+        &beneficiaries,
+        &90,
+        &7,
+        &vec![&env],
+        &2,
+        &None,
+        &0,
+    );
 
     let hashed_commitment = env.crypto().sha256(&soroban_sdk::Bytes::new(&env));
     let hashed_bytes = soroban_sdk::Bytes::from_array(&env, &hashed_commitment.to_array());
@@ -96,7 +116,17 @@ fn hashed_beneficiary_percentage_exceeds_limit() {
         },
     ];
     let tokens: SorobanVec<(Address, i128)> = vec![&env, (token_address, 1_000_000_i128)];
-    let will_id = client.create_will(&owner, &tokens, &beneficiaries, &90, &7, &vec![&env], &2, &None, &0);
+    let will_id = client.create_will(
+        &owner,
+        &tokens,
+        &beneficiaries,
+        &90,
+        &7,
+        &vec![&env],
+        &2,
+        &None,
+        &0,
+    );
 
     let hashed_commitment = env.crypto().sha256(&soroban_sdk::Bytes::new(&env));
     let hashed_bytes = soroban_sdk::Bytes::from_array(&env, &hashed_commitment.to_array());
@@ -129,7 +159,17 @@ fn hashed_beneficiary_with_fixed_amount_beneficiaries() {
         },
     ];
     let tokens: SorobanVec<(Address, i128)> = vec![&env, (token_address, 500_000_i128)];
-    let will_id = client.create_will(&owner, &tokens, &beneficiaries, &90, &7, &vec![&env], &2, &None, &0);
+    let will_id = client.create_will(
+        &owner,
+        &tokens,
+        &beneficiaries,
+        &90,
+        &7,
+        &vec![&env],
+        &2,
+        &None,
+        &0,
+    );
 
     let hashed_commitment = env.crypto().sha256(&soroban_sdk::Bytes::new(&env));
     let hashed_bytes = soroban_sdk::Bytes::from_array(&env, &hashed_commitment.to_array());
@@ -162,7 +202,17 @@ fn multiple_hashed_beneficiaries() {
         },
     ];
     let tokens: SorobanVec<(Address, i128)> = vec![&env, (token_address, 500_000_i128)];
-    let will_id = client.create_will(&owner, &tokens, &beneficiaries, &90, &7, &vec![&env], &2, &None, &0);
+    let will_id = client.create_will(
+        &owner,
+        &tokens,
+        &beneficiaries,
+        &90,
+        &7,
+        &vec![&env],
+        &2,
+        &None,
+        &0,
+    );
 
     // Add multiple hashed beneficiaries, each with its own commitment.
     for i in 0..3u8 {
@@ -198,7 +248,17 @@ fn hashed_beneficiary_funds_preserved_during_release() {
     // FixedAmount commitment -- exactly what the 2,000 bps (20%) hashed
     // beneficiary below reserves.
     let tokens: SorobanVec<(Address, i128)> = vec![&env, (token_address, 1_000_000_i128)];
-    let will_id = client.create_will(&owner, &tokens, &beneficiaries, &90, &7, &vec![&env], &2, &None, &0);
+    let will_id = client.create_will(
+        &owner,
+        &tokens,
+        &beneficiaries,
+        &90,
+        &7,
+        &vec![&env],
+        &2,
+        &None,
+        &0,
+    );
 
     // Add hashed beneficiary with a percentage share from the remaining balance
     let hashed_commitment = env.crypto().sha256(&soroban_sdk::Bytes::new(&env));
@@ -217,5 +277,8 @@ fn hashed_beneficiary_funds_preserved_during_release() {
     // The contract should still hold funds for the hashed beneficiary
     // (exact amount depends on implementation of reserve logic)
     let contract_balance = token.balance(&client.address);
-    assert!(contract_balance > 0, "Hashed beneficiary share should be reserved in contract");
+    assert!(
+        contract_balance > 0,
+        "Hashed beneficiary share should be reserved in contract"
+    );
 }
