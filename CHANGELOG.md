@@ -10,6 +10,12 @@ gets its own [contract spec artifact](./spec) once exported.
 
 ## [Unreleased]
 
+### Fixed
+
+- `clone_will` and `split_will` now reset every copied guardian's consent to
+  `Pending` (addresses and vote weights are preserved) instead of carrying the
+  source will's consent values over to the new will.
+
 ### Removed
 
 - Removed unused `InvalidPercentage` (code 22) error variant from `WillError`.

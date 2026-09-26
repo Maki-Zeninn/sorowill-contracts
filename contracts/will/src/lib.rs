@@ -160,6 +160,13 @@ mod issue_299_test;
 #[cfg(test)]
 mod issue_guardian_vote_underflow_test;
 
+/// Regression tests for issue #375: `clone_will` and `split_will` copied
+/// `source.guardians` verbatim, so a guardian who had already accepted (or
+/// rejected) on the source will was carried over as `Accepted` on a brand-new
+/// will they were never asked about.
+#[cfg(test)]
+mod issue_375_test;
+
 // The following test modules exist as files but were never wired into this
 // module tree by the PRs that added them, so they silently never compiled or
 // ran under `cargo test`.
@@ -239,11 +246,11 @@ mod split_will_test;
 // removed contract functionality, which is out of scope for a merge-damage
 // cleanup — left disconnected until someone decides what to do with it.
 #[cfg(test)]
+mod uncovered_entrypoints_test;
+#[cfg(test)]
 mod update_will_settings_test;
 #[cfg(test)]
 mod wills_by_owner_status_test;
-#[cfg(test)]
-mod uncovered_entrypoints_test;
 
 use soroban_sdk::{
     contract, contractimpl, panic_with_error, symbol_short, token, Address, Bytes, Env, Map, Vec,
@@ -337,10 +344,7 @@ soroban_sdk::contractmeta!(
 );
 // Kept in sync with CONTRACT_VERSION's semver-decoded form by
 // issue_272_test.rs; bump both together.
-soroban_sdk::contractmeta!(
-    key = "Version",
-    val = "1.0.0"
-);
+soroban_sdk::contractmeta!(key = "Version", val = "1.0.0");
 soroban_sdk::contractmeta!(
     key = "Homepage",
     val = "https://github.com/SoroWill/sorowill-contracts"
@@ -1695,7 +1699,6 @@ impl WillContract {
     /// - `limit`: maximum number of wills to return. Capped at
     ///   [`storage::MAX_PAGE_SIZE`].
     pub fn get_wills_by_owner_and_status(
-
         env: Env,
         owner: Address,
         status: WillStatus,
@@ -2110,6 +2113,12 @@ impl WillContract {
     /// `tokens` parameter), a new id, and starts with `Active` status and a
     /// fresh check-in deadline.
     ///
+    /// The guardian list is copied with every consent reset to
+    /// [`GuardianConsent::Pending`] (addresses and vote weights are preserved),
+    /// exactly like [`create_will`]: a guardian must be asked about the clone
+    /// before they can vote on it, so consent recorded on the source will does
+    /// not carry over (#375).
+    ///
     /// The source will must be `Active` or `Triggered`. Cloning is
     /// deliberately *not* allowed from a `Cancelled`, `Released`, or
     /// `Settled` source: an owner who let a will resolve to one of those
@@ -2216,7 +2225,7 @@ impl WillContract {
             trigger_time: None,
             confirmation_deadline: None,
             status: WillStatus::Active,
-            guardians: source.guardians.clone(),
+            guardians: reset_guardian_consent(&env, &source.guardians),
             guardian_vote_weight: 0,
             guardian_votes: 0,
             guardian_cancel_vote_weight: 0,
@@ -2695,6 +2704,12 @@ impl WillContract {
     /// it starts `Active` with the same check-in period, grace period,
     /// co-owners, and threshold as the original.
     ///
+    /// The child inherits the source's guardians and threshold, but every
+    /// guardian's consent is reset to [`GuardianConsent::Pending`] (addresses
+    /// and vote weights are preserved), exactly like [`create_will`]: a
+    /// guardian must be asked about the child will before they can vote on it,
+    /// so consent recorded on the source does not carry over (#375).
+    ///
     /// # Parameters
     /// - `will_id`: the source will to split from.
     /// - `owner`: must be the primary owner of the source will.
@@ -2837,7 +2852,7 @@ impl WillContract {
             trigger_time: None,
             confirmation_deadline: None,
             status: WillStatus::Active,
-            guardians: source.guardians.clone(),
+            guardians: reset_guardian_consent(&env, &source.guardians),
             guardian_vote_weight: 0,
             guardian_votes: 0,
             guardian_cancel_vote_weight: 0,
@@ -3069,6 +3084,27 @@ fn assert_status(env: &Env, will: &Will, expected: WillStatus, err: WillError) {
     }
 }
 
+/// Copies `guardians` into a new list with every consent reset to
+/// [`GuardianConsent::Pending`], preserving addresses and vote weights.
+///
+/// A brand-new will has to re-ask its guardians for consent: a guardian who
+/// accepted (or rejected) the role on the source will was never asked about the
+/// new one, and carrying the old value over would let them vote — or silently
+/// inherit a decline they never made — on a will they never agreed to (#375).
+/// `create_will`, `batch_create_wills` and `update_guardians*` all start
+/// guardians at `Pending` for the same reason.
+fn reset_guardian_consent(env: &Env, guardians: &Vec<Guardian>) -> Vec<Guardian> {
+    let mut pending: Vec<Guardian> = Vec::new(env);
+    for g in guardians.iter() {
+        pending.push_back(Guardian {
+            address: g.address.clone(),
+            weight: g.weight,
+            consent: GuardianConsent::Pending,
+        });
+    }
+    pending
+}
+
 /// Asserts `caller` authorized this call and is either the will's owner or
 /// its designated delegate, panicking with `NotOwner` otherwise.
 fn assert_owner_or_delegate(env: &Env, will: &Will, caller: &Address) {
@@ -3152,7 +3188,10 @@ fn assert_valid_allocations(env: &Env, beneficiaries: &Vec<Beneficiary>, will_ba
 /// sum to exactly 10,000 bps again, proportionally to their current shares
 /// (the last percentage entry absorbs any rounding remainder).
 /// `Allocation::FixedAmount` entries pass through unchanged.
-pub(crate) fn renormalize_percentages(env: &Env, beneficiaries: &Vec<Beneficiary>) -> Vec<Beneficiary> {
+pub(crate) fn renormalize_percentages(
+    env: &Env,
+    beneficiaries: &Vec<Beneficiary>,
+) -> Vec<Beneficiary> {
     let mut percentage_total: u32 = 0;
     let mut percentage_count: u32 = 0;
     for b in beneficiaries.iter() {
