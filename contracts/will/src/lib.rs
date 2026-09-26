@@ -47,6 +47,7 @@
 
 mod errors;
 mod events;
+mod batch_check_in_limit;
 mod storage;
 mod types;
 mod split_uniqueness_check;
@@ -118,6 +119,8 @@ mod distribute_overflow_safety_test;
 /// reinitialising the vote-weight accumulator.
 #[cfg(test)]
 mod issue_183_test;
+#[cfg(test)]
+mod issue_414_test;
 
 /// Regression test for issue #184: `merge_wills` refuses mismatched primary tokens.
 #[cfg(test)]
@@ -781,8 +784,12 @@ impl WillContract {
     /// Batch check-in across multiple wills in a single transaction.
     /// All wills must be owned by `owner` and in `Active` status.
     /// Panics if any will ID is invalid, not owned by `owner`, or not `Active`.
+    ///
+    /// At most `batch_check_in_limit::MAX_BATCH_CHECK_IN` (50) IDs are accepted
+    /// per call; longer inputs panic with [`WillError::BatchTooLarge`].
     pub fn batch_check_in(env: Env, will_ids: Vec<u64>, owner: Address) {
         owner.require_auth();
+        batch_check_in_limit::assert_within_limit(&env, will_ids.len());
         let now = env.ledger().timestamp();
         let count = will_ids.len();
 
