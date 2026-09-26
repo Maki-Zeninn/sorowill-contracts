@@ -19,6 +19,13 @@ gets its own [contract spec artifact](./spec) once exported.
 
 ### Fixed
 
+- `release_inheritance` now requires `now` to be *strictly greater* than the
+  grace deadline, so the deadline second belongs to the owner's
+  `emergency_checkin` and exactly one of the two entry points succeeds at any
+  timestamp (#354). Previously both were valid at `now == deadline`, so the
+  outcome depended on which transaction the ledger ordered first. The rustdoc
+  for both functions, for `guardian_cancel_trigger` and for
+  `get_time_until_deadline` now states which side owns the boundary second.
 - Restored five `WillError` variants (`InvalidTokenCount`, `InvalidPreimageLength`,
   `InvalidCommitmentLength`, `DuplicateCommitment`, `BatchTooLarge`) and the
   `total_balance` helper that a bad merge had dropped, which left `main` failing
