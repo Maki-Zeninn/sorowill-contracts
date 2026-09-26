@@ -242,7 +242,7 @@ disambiguate.
 | 9 | `NotGuardian` | The caller is not a designated guardian of this will. |
 | 10 | `CheckinNotDue` | `trigger_will` was called before the check-in deadline passed. |
 | 11 | `ZeroAmount` | An amount of zero (or less) was supplied where a positive amount is required. |
-| 12 | `TooManyBeneficiaries` | Too many beneficiaries (or guardians) were supplied. |
+| 12 | `TooManyBeneficiaries` | A list-length cap was exceeded: a `beneficiaries` list that is empty or longer than `MAX_BENEFICIARIES`, a `guardians` list longer than `MAX_GUARDIANS`, or a `batch_create_wills` spec list that is empty or longer than `BATCH_MAX`. Token-list bounds are **not** reported here — those raise `InvalidTokenCount`. |
 | 13 | `WillNotSettled` | The requested action requires the will to be `Released` or `Cancelled`. |
 | 14 | `WillNotBothActive` | Both wills in a merge must be `Active`. |
 | 15 | `SameWillId` | The same will id was supplied for both sides of a merge. |
@@ -250,8 +250,8 @@ disambiguate.
 | 17 | `OwnerCannotBeGuardian` | The owner cannot designate themselves as a guardian of their own will. |
 | 18 | `BeneficiaryNotFound` | A beneficiary is not found in the will's beneficiary list. |
 | 19 | `KeeperBountyExceedsMax` | Keeper bounty basis points exceed the maximum allowed (100 bps / 1%). |
-| 20 | `InvalidGuardianThreshold` | Guardian threshold is out of range (must be between 1 and `guardians.len()`). |
-| 21 | `FixedAmountExceedsBalance` | The sum of every `Allocation::FixedAmount` beneficiary exceeds the will's balance, or (for a will with no percentage-based beneficiaries) does not exactly account for the whole balance. |
+| 20 | `InvalidGuardianThreshold` | `guardian_threshold` is outside the range the guardian list can reach. Quorum is compared against accumulated guardian **weight**, so the range is `1..=guardians.len()` for unweighted lists and `1..=sum(weights)` for lists installed via `update_guardians_weighted`. Also raised when shrinking a non-empty guardian list would leave the stored threshold unreachable. |
+| 21 | `FixedAmountExceedsBalance` | The sum of every `Allocation::FixedAmount` entry exceeds the will's **primary-token** balance. A `FixedAmount`-only will is allowed to leave headroom unaccounted for (reserved for a later `add_hashed_beneficiary`, otherwise refunded to the owner at release) — only an over-commitment is an error. |
 | 22 | `InvalidPercentage` | A beneficiary percentage is not in the valid range (1..=10000 basis points). |
 | 23 | `WillNotReleased` | The requested action requires the will to be `Released`. |
 | 24 | `NotSameOwner` | Cannot merge: both wills must be owned by the same address. |
@@ -270,7 +270,12 @@ disambiguate.
 | 37 | `TooManyWills` | An owner or beneficiary index list is already at `MAX_WILLS_PER_INDEX` and cannot accept another will id. |
 | 38 | `GuardianNotConsented` | A guardian has not accepted their role and cannot vote. |
 | 39 | `PrimaryTokenMismatch` | Cannot merge: the two wills' primary tokens differ. |
-| 40 | `InvalidTokenCount` | The token list supplied to `create_will`, `clone_will`, `split_will`, or `batch_create_wills` was empty, or contained more than `MAX_TOKENS` entries. |
+| 40 | `DuplicateToken` | The same token address was supplied more than once in a `tokens` list. |
+| 41 | `BatchTooLarge` | A `batch_check_in` call supplied more than `MAX_BATCH_CHECK_IN` (50) will ids. |
+| 42 | `InvalidTokenCount` | The token list supplied to `create_will`, `clone_will`, `split_will`, or `batch_create_wills` was empty, or contained more than `MAX_TOKENS` entries. |
+| 43 | `InvalidPreimageLength` | `reveal_and_claim` was called with a pre-image that is not exactly 32 bytes, so its SHA-256 could never match a stored commitment. |
+| 44 | `InvalidCommitmentLength` | A hashed-beneficiary commitment was not exactly 32 bytes (a SHA-256 digest) and could never be matched by a pre-image. |
+| 45 | `DuplicateCommitment` | The same commitment hash is already registered on the will, making the second slot unreachable. |
 
 ## Contract spec artifact
 

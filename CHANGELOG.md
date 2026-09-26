@@ -16,6 +16,17 @@ gets its own [contract spec artifact](./spec) once exported.
   now reject a `tokens` list that names the same token address twice (#350).
 - `get_will_history` now records the `confirm_will` (`PendingConfirmation` to
   `Active`) and `close_will` (`Released` to `Settled`) transitions (#352).
+- Restored five `WillError` variants that entry points and tests already
+  referenced but which were missing from the enum, so the crate compiles:
+  `BatchTooLarge` (41), `InvalidTokenCount` (42), `InvalidPreimageLength` (43),
+  `InvalidCommitmentLength` (44) and `DuplicateCommitment` (45).
+
+### Changed
+
+- Corrected the `WillError` docs for `FixedAmountExceedsBalance`,
+  `InvalidGuardianThreshold` and `TooManyBeneficiaries` so each states exactly
+  when it is raised. The wording is generated into the SDK and client error
+  references, which integrators rely on to interpret error codes (#389).
 
 ### Fixed
 

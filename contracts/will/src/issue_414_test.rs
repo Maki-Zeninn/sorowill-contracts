@@ -23,5 +23,5 @@ fn batch_check_in_over_limit_is_rejected() {
     let owner = Address::generate(&env);
 
     let res = client.try_batch_check_in(&ids(&env, MAX_BATCH_CHECK_IN + 1), &owner);
-    assert_eq!(res.unwrap_err().unwrap(), WillError::BatchTooLarge);
+    assert_eq!(res.unwrap_err().unwrap(), WillError::BatchTooLarge.into());
 }
