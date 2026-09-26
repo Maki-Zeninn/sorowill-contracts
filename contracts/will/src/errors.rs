@@ -97,4 +97,8 @@ pub enum WillError {
     /// Cannot merge: the two wills' primary tokens differ, so summing their
     /// legacy `balance` fields would be nonsensical.
     PrimaryTokenMismatch = 39,
+    /// `accept_guardian_role` / `reject_guardian_role` was called for a consent
+    /// transition the guardian state machine does not allow (e.g. accepting
+    /// after an irrevocable rejection).
+    InvalidConsentTransition = 40,
 }
