@@ -14,7 +14,13 @@ use crate::{Allocation, Beneficiary, WillContract, WillContractClient};
 
 const DAY: u64 = 86_400;
 
-fn setup<'a>() -> (Env, WillContractClient<'a>, Address, TokenClient<'a>, Address) {
+fn setup<'a>() -> (
+    Env,
+    WillContractClient<'a>,
+    Address,
+    TokenClient<'a>,
+    Address,
+) {
     let env = Env::default();
     env.mock_all_auths();
     env.ledger().set_timestamp(1_700_000_000);
@@ -27,7 +33,13 @@ fn setup<'a>() -> (Env, WillContractClient<'a>, Address, TokenClient<'a>, Addres
     let contract_id = env.register(WillContract, ());
     let client = WillContractClient::new(&env, &contract_id);
 
-    (env.clone(), client, owner, TokenClient::new(&env, &token_address), token_address)
+    (
+        env.clone(),
+        client,
+        owner,
+        TokenClient::new(&env, &token_address),
+        token_address,
+    )
 }
 
 fn advance(env: &Env, days: u64) {
@@ -53,10 +65,28 @@ fn merged_will_guardian_vote_weight_reset() {
     let tokens: SorobanVec<(Address, i128)> = vec![&env, (token_address.clone(), 1_000_000_i128)];
 
     // Create two wills
-    let will_id_a =
-        client.create_will(&owner, &tokens, &beneficiaries, &90, &7, &vec![&env, guardian1.clone()], &1, &None, &0);
-    let will_id_b =
-        client.create_will(&owner, &tokens, &beneficiaries, &90, &7, &vec![&env, guardian1.clone()], &1, &None, &0);
+    let will_id_a = client.create_will(
+        &owner,
+        &tokens,
+        &beneficiaries,
+        &90,
+        &7,
+        &vec![&env, guardian1.clone()],
+        &1,
+        &None,
+        &0,
+    );
+    let will_id_b = client.create_will(
+        &owner,
+        &tokens,
+        &beneficiaries,
+        &90,
+        &7,
+        &vec![&env, guardian1.clone()],
+        &1,
+        &None,
+        &0,
+    );
 
     // Accept guardian role on both wills
     client.accept_guardian_role(&will_id_a, &guardian1);
@@ -67,8 +97,14 @@ fn merged_will_guardian_vote_weight_reset() {
 
     // Get merged will and verify guardian_vote_weight is 0
     let merged_will = client.get_will(&will_id_a);
-    assert_eq!(merged_will.guardian_vote_weight, 0, "guardian_vote_weight should be 0 after merge");
-    assert_eq!(merged_will.guardian_votes, 0, "guardian_votes should also be 0 after merge");
+    assert_eq!(
+        merged_will.guardian_vote_weight, 0,
+        "guardian_vote_weight should be 0 after merge"
+    );
+    assert_eq!(
+        merged_will.guardian_votes, 0,
+        "guardian_votes should also be 0 after merge"
+    );
 
     // guardian_trigger is an early-release mechanism that requires the will
     // to still be Active (it is not gated on trigger_will/the grace period),
@@ -79,5 +115,8 @@ fn merged_will_guardian_vote_weight_reset() {
     client.guardian_trigger(&will_id_a, &guardian1, &crate::GuardianVoteReason::Deceased);
 
     let voted_will = client.get_will(&will_id_a);
-    assert!(voted_will.guardian_vote_weight > 0, "vote weight should accumulate correctly");
+    assert!(
+        voted_will.guardian_vote_weight > 0,
+        "vote weight should accumulate correctly"
+    );
 }

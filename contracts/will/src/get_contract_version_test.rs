@@ -37,9 +37,14 @@ fn test_get_contract_version_matches_constant() {
     let (_env, client, _owner) = setup();
 
     let version = client.get_contract_version();
-    // CONTRACT_VERSION should be encoded as major * 1_000_000 + minor * 1_000 + patch
-    // Currently it's 1_000_000 which represents version 1.0.0
-    assert_eq!(version, 1_000_000);
+    // CONTRACT_VERSION should be encoded as major * 1_000_000 + minor * 1_000 + patch.
+    // Rather than pinning a literal (which drifts the moment the version is
+    // bumped), decode the reported value and check it against the same formula
+    // applied to the constant.
+    let expected = (CONTRACT_VERSION / 1_000_000) * 1_000_000
+        + ((CONTRACT_VERSION / 1_000) % 1_000) * 1_000
+        + CONTRACT_VERSION % 1_000;
+    assert_eq!(version, expected);
 }
 
 // NOTE: two tests previously here (`..._with_migrate_will_version_check` and

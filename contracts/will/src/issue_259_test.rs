@@ -61,7 +61,11 @@ fn pagination_skips_past_a_cursor_id_removed_from_the_index() {
     // paginating client wrongly concludes it has reached the end.
     let page = client.get_wills_by_owner(&owner, &Some(cursor_boundary_id), &10);
 
-    assert_eq!(page.len(), 2, "expected the two wills created after the cancelled one");
+    assert_eq!(
+        page.len(),
+        2,
+        "expected the two wills created after the cancelled one"
+    );
     assert_eq!(page.get_unchecked(0).id, will_ids.get_unchecked(3));
     assert_eq!(page.get_unchecked(1).id, will_ids.get_unchecked(4));
 }

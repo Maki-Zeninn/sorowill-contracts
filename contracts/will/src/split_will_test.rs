@@ -69,13 +69,27 @@ fn split_will_reduces_source_balance_and_renormalizes_child_percentages() {
     );
 
     let source = client.get_will(&source_id);
-    assert_eq!(source.balance, 750_000_i128, "source balance should shrink by the split amount");
-    assert_eq!(source.beneficiaries.len(), 1, "split beneficiary should be removed from the source");
+    assert_eq!(
+        source.balance, 750_000_i128,
+        "source balance should shrink by the split amount"
+    );
+    assert_eq!(
+        source.beneficiaries.len(),
+        1,
+        "split beneficiary should be removed from the source"
+    );
     assert_eq!(source.beneficiaries.get(0).unwrap().address, beneficiary_b);
 
     let child = client.get_will(&child_id);
-    assert_eq!(child.balance, 250_000_i128, "new child will should receive the split amount");
-    assert_eq!(child.beneficiaries.len(), 1, "split child should keep its beneficiary list");
+    assert_eq!(
+        child.balance, 250_000_i128,
+        "new child will should receive the split amount"
+    );
+    assert_eq!(
+        child.beneficiaries.len(),
+        1,
+        "split child should keep its beneficiary list"
+    );
     let total_bp = child
         .beneficiaries
         .iter()
@@ -83,7 +97,10 @@ fn split_will_reduces_source_balance_and_renormalizes_child_percentages() {
             Allocation::Percentage(bp) => sum + bp,
             Allocation::FixedAmount(_) => sum,
         });
-    assert_eq!(total_bp, 10_000, "renormalised child percentages must sum to 10,000 bps");
+    assert_eq!(
+        total_bp, 10_000,
+        "renormalised child percentages must sum to 10,000 bps"
+    );
 }
 
 #[test]

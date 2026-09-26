@@ -61,12 +61,12 @@ fn filters_wills_by_owner_and_status() {
 
     let active = client.get_wills_by_owner_and_status(&owner, &WillStatus::Active, &None, &100);
     assert_eq!(active.len(), 2);
-    let active_ids: std::collections::HashSet<u64> =
-        active.iter().map(|w| w.id).collect();
+    let active_ids: std::collections::HashSet<u64> = active.iter().map(|w| w.id).collect();
     assert!(active_ids.contains(&active_will));
     assert!(active_ids.contains(&another_active_will));
 
-    let triggered = client.get_wills_by_owner_and_status(&owner, &WillStatus::Triggered, &None, &100);
+    let triggered =
+        client.get_wills_by_owner_and_status(&owner, &WillStatus::Triggered, &None, &100);
     assert_eq!(triggered.len(), 1);
     assert_eq!(triggered.get(0).unwrap().id, triggered_will);
 
