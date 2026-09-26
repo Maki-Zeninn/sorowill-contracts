@@ -112,6 +112,7 @@
     { "code": 42, "name": "InvalidPreimageLength" },
     { "code": 43, "name": "InvalidCommitmentLength" },
     { "code": 44, "name": "DuplicateCommitment" },
-    { "code": 45, "name": "BatchTooLarge" }
+    { "code": 45, "name": "DuplicateWillId" },
+    { "code": 46, "name": "BatchTooLarge" }
   ]
 }

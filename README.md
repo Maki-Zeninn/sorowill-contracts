@@ -276,7 +276,8 @@ disambiguate.
 | 42 | `InvalidPreimageLength` | `reveal_and_claim` was called with a pre-image whose length is not exactly `PREIMAGE_LENGTH` bytes. |
 | 43 | `InvalidCommitmentLength` | `add_hashed_beneficiary` was called with a `commitment` that is not exactly 32 bytes. |
 | 44 | `DuplicateCommitment` | `add_hashed_beneficiary` was called with a `commitment` already registered on this will. |
-| 45 | `BatchTooLarge` | `batch_check_in` was given more will IDs than `MAX_BATCH_CHECK_IN` (50). |
+| 45 | `DuplicateWillId` | The same will id was supplied more than once in a `batch_check_in` list. |
+| 46 | `BatchTooLarge` | `batch_check_in` was given more will IDs than `MAX_BATCH_CHECK_IN` (50). |
 
 ## Contract spec artifact
 

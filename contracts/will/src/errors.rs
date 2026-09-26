@@ -121,7 +121,12 @@ pub enum WillError {
     /// registered on this will. `reveal_and_claim` always matches the first
     /// slot, so a duplicate leaves the later slot's share unclaimable (#371).
     DuplicateCommitment = 44,
+    /// The same will id was supplied more than once in a `batch_check_in`
+    /// list. Repeats are rejected rather than processed once per occurrence,
+    /// which would rewrite the same will and emit a redundant `check_in` event
+    /// for every repeat (#355).
+    DuplicateWillId = 45,
     /// `batch_check_in` was given more will IDs than
     /// [`crate::batch_check_in_limit::MAX_BATCH_CHECK_IN`] (#414).
-    BatchTooLarge = 45,
+    BatchTooLarge = 46,
 }
