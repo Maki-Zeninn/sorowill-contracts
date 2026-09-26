@@ -34,7 +34,9 @@ fn setup<'a>() -> (
 }
 
 fn advance_time(env: &Env, seconds: u64) {
-    env.ledger().with_mut(|l| { l.timestamp += seconds; });
+    env.ledger().with_mut(|l| {
+        l.timestamp += seconds;
+    });
 }
 
 // ── Issue #298: guardian_trigger does not pay keeper bounty ───────────────────
@@ -49,7 +51,13 @@ fn test_guardian_trigger_does_not_pay_keeper_bounty() {
     let will_id = client.create_will(
         &owner,
         &vec![&env, (token_address.clone(), 1_000_000_i128)],
-        &vec![&env, Beneficiary { address: beneficiary.clone(), allocation: crate::Allocation::Percentage(10_000) }],
+        &vec![
+            &env,
+            Beneficiary {
+                address: beneficiary.clone(),
+                allocation: crate::Allocation::Percentage(10_000),
+            },
+        ],
         &90,
         &7,
         &vec![&env, g1.clone(), g2.clone()],
@@ -79,7 +87,13 @@ fn test_close_will_rejects_already_settled() {
     let will_id = client.create_will(
         &owner,
         &vec![&env, (token_address.clone(), 1_000_000_i128)],
-        &vec![&env, Beneficiary { address: beneficiary.clone(), allocation: crate::Allocation::Percentage(10_000) }],
+        &vec![
+            &env,
+            Beneficiary {
+                address: beneficiary.clone(),
+                allocation: crate::Allocation::Percentage(10_000),
+            },
+        ],
         &90,
         &7,
         &vec![&env],
@@ -108,7 +122,13 @@ fn test_batch_check_in_atomicity_on_invalid_id() {
     let will_id_1 = client.create_will(
         &owner,
         &vec![&env, (token_address.clone(), 1_000_000)],
-        &vec![&env, Beneficiary { address: beneficiary.clone(), allocation: crate::Allocation::Percentage(10_000) }],
+        &vec![
+            &env,
+            Beneficiary {
+                address: beneficiary.clone(),
+                allocation: crate::Allocation::Percentage(10_000),
+            },
+        ],
         &90,
         &7,
         &vec![&env],
@@ -120,7 +140,13 @@ fn test_batch_check_in_atomicity_on_invalid_id() {
     let will_id_2 = client.create_will(
         &owner,
         &vec![&env, (token_address, 500_000)],
-        &vec![&env, Beneficiary { address: beneficiary, allocation: crate::Allocation::Percentage(10_000) }],
+        &vec![
+            &env,
+            Beneficiary {
+                address: beneficiary,
+                allocation: crate::Allocation::Percentage(10_000),
+            },
+        ],
         &60,
         &5,
         &vec![&env],

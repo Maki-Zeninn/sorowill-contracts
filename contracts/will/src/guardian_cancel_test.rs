@@ -5,7 +5,8 @@
 //! Covers the happy path (a guardian quorum returning a `Triggered` will to
 //! `Active`), the independent-namespace guarantee between release votes and
 //! cancel votes, and the `GuardianCooldownActive` / `NotGuardian` /
-//! `AlreadyVoted` rejection paths.
+//! `AlreadyVoted` rejection paths, and the grace-deadline rule from #373: a
+//! cancel is only meaningful while the grace period is still open.
 
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
@@ -141,6 +142,58 @@ fn cancel_is_rejected_during_the_guardian_list_cooldown() {
         client.try_guardian_cancel_trigger(&will_id, &guardian_a),
         Err(Ok(WillError::GuardianCooldownActive.into()))
     );
+}
+
+/// Issue #373: a cancel quorum reached *after* the grace deadline must be
+/// rejected. `emergency_checkin` already refuses to run once the grace period
+/// is over, but `guardian_cancel_trigger` used to check only the will's status
+/// and the quorum, letting guardians rewind an expired trigger (whose funds were
+/// already releasable) back to `Active` and repeat the trick every cycle.
+#[test]
+fn cancel_is_rejected_after_the_grace_deadline() {
+    // Grace period is 7 days (see `setup`), and the cooldown has long elapsed
+    // by the time the will is triggered 91 days after creation.
+    let (env, contract_id, guardian_a, guardian_b, will_id) = setup_triggered(90);
+    let client = WillContractClient::new(&env, &contract_id);
+
+    // One second past the deadline: the release is now possible, so the
+    // trigger must be final.
+    env.ledger().with_mut(|l| l.timestamp += 7 * DAY + 1);
+
+    assert_eq!(
+        client.try_guardian_cancel_trigger(&will_id, &guardian_a),
+        Err(Ok(WillError::GracePeriodExpired.into())),
+    );
+    assert_eq!(
+        client.try_guardian_cancel_trigger(&will_id, &guardian_b),
+        Err(Ok(WillError::GracePeriodExpired.into())),
+        "a full quorum must not be able to cancel past the deadline either"
+    );
+
+    // Neither the will nor its vote counters were touched by the rejected votes.
+    let will = client.get_will(&will_id);
+    assert_eq!(will.status, WillStatus::Triggered);
+    assert_eq!(will.guardian_cancel_votes, 0);
+    assert_eq!(will.guardian_cancel_vote_weight, 0);
+
+    // And the funds are in fact releasable -- the whole point of the fix.
+    client.release_inheritance(&will_id, &None);
+    assert_eq!(client.get_will(&will_id).status, WillStatus::Released);
+}
+
+/// Issue #373: the boundary itself is still inside the grace period. This
+/// mirrors `emergency_checkin`, which rejects only when `now >` the deadline.
+#[test]
+fn cancel_is_still_allowed_exactly_at_the_grace_deadline() {
+    let (env, contract_id, guardian_a, guardian_b, will_id) = setup_triggered(90);
+    let client = WillContractClient::new(&env, &contract_id);
+
+    env.ledger().with_mut(|l| l.timestamp += 7 * DAY);
+
+    client.guardian_cancel_trigger(&will_id, &guardian_a);
+    client.guardian_cancel_trigger(&will_id, &guardian_b);
+
+    assert_eq!(client.get_will(&will_id).status, WillStatus::Active);
 }
 
 #[test]

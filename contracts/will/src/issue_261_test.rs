@@ -65,7 +65,10 @@ fn create_will_aborts_at_transfer_not_at_the_decimals_probe() {
     // unimplemented-function call as a generic host Error rather than a raw
     // abort, so this test only pins "failed, and not at the probe" instead
     // of the exact error shape.
-    assert!(result.is_err(), "expected create_will to fail, got {result:?}");
+    assert!(
+        result.is_err(),
+        "expected create_will to fail, got {result:?}"
+    );
     assert_ne!(
         result,
         Err(Ok(crate::WillError::InvalidToken.into())),

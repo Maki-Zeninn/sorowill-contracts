@@ -83,17 +83,36 @@ fn test_update_will_settings_beneficiaries_only() {
         },
     ];
 
-    client.update_will_settings(&will_id, &owner, &Some(new_beneficiaries), &None, &None, &None);
+    client.update_will_settings(
+        &will_id,
+        &owner,
+        &Some(new_beneficiaries),
+        &None,
+        &None,
+        &None,
+    );
 
     // Verify beneficiaries were updated
     let updated_will = client.get_will(&will_id);
     assert_eq!(updated_will.beneficiaries.len(), 2);
-    assert_eq!(updated_will.beneficiaries.get(0).unwrap().address, new_beneficiary1);
-    assert_eq!(updated_will.beneficiaries.get(1).unwrap().address, new_beneficiary2);
+    assert_eq!(
+        updated_will.beneficiaries.get(0).unwrap().address,
+        new_beneficiary1
+    );
+    assert_eq!(
+        updated_will.beneficiaries.get(1).unwrap().address,
+        new_beneficiary2
+    );
 
     // Verify periods were not changed
-    assert_eq!(updated_will.checkin_period_days, original_will.checkin_period_days);
-    assert_eq!(updated_will.grace_period_days, original_will.grace_period_days);
+    assert_eq!(
+        updated_will.checkin_period_days,
+        original_will.checkin_period_days
+    );
+    assert_eq!(
+        updated_will.grace_period_days,
+        original_will.grace_period_days
+    );
 }
 
 #[test]
@@ -120,9 +139,18 @@ fn test_update_will_settings_guardians_only() {
     assert_eq!(updated_will.guardians.get(1).unwrap().address, guardian2);
 
     // Verify beneficiaries and periods were not changed
-    assert_eq!(updated_will.beneficiaries.len(), original_will.beneficiaries.len());
-    assert_eq!(updated_will.checkin_period_days, original_will.checkin_period_days);
-    assert_eq!(updated_will.grace_period_days, original_will.grace_period_days);
+    assert_eq!(
+        updated_will.beneficiaries.len(),
+        original_will.beneficiaries.len()
+    );
+    assert_eq!(
+        updated_will.checkin_period_days,
+        original_will.checkin_period_days
+    );
+    assert_eq!(
+        updated_will.grace_period_days,
+        original_will.grace_period_days
+    );
 }
 
 #[test]
@@ -140,7 +168,14 @@ fn test_update_will_settings_periods_only() {
     let new_checkin = original_checkin + 10;
     let new_grace = original_grace + 5;
 
-    client.update_will_settings(&will_id, &owner, &None, &None, &Some(new_checkin), &Some(new_grace));
+    client.update_will_settings(
+        &will_id,
+        &owner,
+        &None,
+        &None,
+        &Some(new_checkin),
+        &Some(new_grace),
+    );
 
     // Verify periods were updated
     let updated_will = client.get_will(&will_id);
@@ -148,7 +183,10 @@ fn test_update_will_settings_periods_only() {
     assert_eq!(updated_will.grace_period_days, new_grace);
 
     // Verify beneficiaries and guardians were not changed
-    assert_eq!(updated_will.beneficiaries.len(), original_will.beneficiaries.len());
+    assert_eq!(
+        updated_will.beneficiaries.len(),
+        original_will.beneficiaries.len()
+    );
     assert_eq!(updated_will.guardians.len(), original_will.guardians.len());
 }
 
@@ -190,7 +228,10 @@ fn test_update_will_settings_all_fields_together() {
     // Verify all fields were updated
     let updated_will = client.get_will(&will_id);
     assert_eq!(updated_will.beneficiaries.len(), 1);
-    assert_eq!(updated_will.beneficiaries.get(0).unwrap().address, new_beneficiary);
+    assert_eq!(
+        updated_will.beneficiaries.get(0).unwrap().address,
+        new_beneficiary
+    );
     assert_eq!(updated_will.guardians.len(), 1);
     assert_eq!(updated_will.guardians.get(0).unwrap().address, new_guardian);
     assert_eq!(updated_will.checkin_period_days, new_checkin);
@@ -240,11 +281,24 @@ fn test_update_will_settings_partial_updates_independent() {
         },
     ];
 
-    client.update_will_settings(&will_id, &owner, &Some(new_beneficiaries1), &None, &None, &None);
+    client.update_will_settings(
+        &will_id,
+        &owner,
+        &Some(new_beneficiaries1),
+        &None,
+        &None,
+        &None,
+    );
 
     let after_first = client.get_will(&will_id);
-    assert_eq!(after_first.beneficiaries.get(0).unwrap().address, new_beneficiary1);
-    assert_eq!(after_first.checkin_period_days, original_will.checkin_period_days);
+    assert_eq!(
+        after_first.beneficiaries.get(0).unwrap().address,
+        new_beneficiary1
+    );
+    assert_eq!(
+        after_first.checkin_period_days,
+        original_will.checkin_period_days
+    );
 
     // Second update: just periods
     let new_checkin = original_will.checkin_period_days + 5;
@@ -252,7 +306,10 @@ fn test_update_will_settings_partial_updates_independent() {
 
     let after_second = client.get_will(&will_id);
     // Beneficiary from first update should still be there
-    assert_eq!(after_second.beneficiaries.get(0).unwrap().address, new_beneficiary1);
+    assert_eq!(
+        after_second.beneficiaries.get(0).unwrap().address,
+        new_beneficiary1
+    );
     // Period should be updated
     assert_eq!(after_second.checkin_period_days, new_checkin);
 }
@@ -345,7 +402,10 @@ fn update_will_settings_guardian_change_clears_cancel_vote_state() {
     client.emergency_checkin(&will_id, &owner);
     let after_emerg = client.get_will(&will_id);
     assert_eq!(after_emerg.status, WillStatus::Active);
-    assert_eq!(after_emerg.guardian_cancel_votes, 0, "emergency_checkin must zero cancel_votes");
+    assert_eq!(
+        after_emerg.guardian_cancel_votes, 0,
+        "emergency_checkin must zero cancel_votes"
+    );
     assert_eq!(after_emerg.guardian_cancel_vote_weight, 0);
 
     // ── Now call update_will_settings to swap the guardian list ──────────
@@ -388,7 +448,10 @@ fn update_will_settings_guardian_change_clears_cancel_vote_state() {
     );
     assert_eq!(after_update.guardians.len(), 2);
     assert_eq!(after_update.guardians.get(0).unwrap().address, new_guardian);
-    assert_eq!(after_update.guardians.get(1).unwrap().address, new_guardian_2);
+    assert_eq!(
+        after_update.guardians.get(1).unwrap().address,
+        new_guardian_2
+    );
 
     // ── Confirm the new guardian's cancel-vote works on the next cycle ───
     // Accept the new guardian's role, advance to miss the check-in, trigger,

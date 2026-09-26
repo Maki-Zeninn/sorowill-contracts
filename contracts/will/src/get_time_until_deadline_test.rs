@@ -45,8 +45,6 @@ fn create_active_will(
     ];
     let tokens: SorobanVec<(Address, i128)> = vec![env, (token_address.clone(), 1_000_000_i128)];
 
-    
-
     // confirmation_delay_seconds is 0 above, so the will starts Active
     // immediately -- no confirm_will call is needed (or valid).
     client.create_will(
@@ -67,7 +65,14 @@ fn test_get_time_until_deadline_active_will_positive_time_remaining() {
     let (env, client, owner, token_address) = setup();
 
     let checkin_period_days = 30;
-    let will_id = create_active_will(&env, &client, &owner, &token_address, checkin_period_days, 7);
+    let will_id = create_active_will(
+        &env,
+        &client,
+        &owner,
+        &token_address,
+        checkin_period_days,
+        7,
+    );
 
     // Will was just created, so check-in deadline is ~30 days away
     let time_until_deadline = client.get_time_until_deadline(&will_id);
@@ -77,7 +82,11 @@ fn test_get_time_until_deadline_active_will_positive_time_remaining() {
     // Should be approximately 30 days in seconds
     let expected_approx = (checkin_period_days * DAY) as i64;
     let diff = (seconds_remaining - expected_approx).abs();
-    assert!(diff < 100, "Deadline should be ~30 days away, got {} seconds", seconds_remaining);
+    assert!(
+        diff < 100,
+        "Deadline should be ~30 days away, got {} seconds",
+        seconds_remaining
+    );
 }
 
 #[test]
@@ -85,7 +94,14 @@ fn test_get_time_until_deadline_active_will_negative_after_missed_deadline() {
     let (env, client, owner, token_address) = setup();
 
     let checkin_period_days = 30;
-    let will_id = create_active_will(&env, &client, &owner, &token_address, checkin_period_days, 7);
+    let will_id = create_active_will(
+        &env,
+        &client,
+        &owner,
+        &token_address,
+        checkin_period_days,
+        7,
+    );
 
     // Advance time past the check-in deadline but don't trigger yet
     env.ledger().with_mut(|l| l.timestamp += 31 * DAY);
@@ -108,7 +124,14 @@ fn test_get_time_until_deadline_triggered_will_counts_grace_period() {
 
     let checkin_period_days = 30;
     let grace_period_days = 7;
-    let will_id = create_active_will(&env, &client, &owner, &token_address, checkin_period_days, grace_period_days);
+    let will_id = create_active_will(
+        &env,
+        &client,
+        &owner,
+        &token_address,
+        checkin_period_days,
+        grace_period_days,
+    );
 
     // Advance past check-in deadline
     env.ledger().with_mut(|l| l.timestamp += 31 * DAY);
@@ -136,7 +159,14 @@ fn test_get_time_until_deadline_triggered_will_negative_after_grace_expires() {
 
     let checkin_period_days = 30;
     let grace_period_days = 7;
-    let will_id = create_active_will(&env, &client, &owner, &token_address, checkin_period_days, grace_period_days);
+    let will_id = create_active_will(
+        &env,
+        &client,
+        &owner,
+        &token_address,
+        checkin_period_days,
+        grace_period_days,
+    );
 
     // Advance past check-in deadline
     env.ledger().with_mut(|l| l.timestamp += 31 * DAY);
@@ -187,7 +217,10 @@ fn test_get_time_until_deadline_pending_confirmation_returns_none() {
 
     // Don't confirm the will - it's in PendingConfirmation status
     let time_until_deadline = client.get_time_until_deadline(&will_id);
-    assert!(time_until_deadline.is_none(), "PendingConfirmation status should return None");
+    assert!(
+        time_until_deadline.is_none(),
+        "PendingConfirmation status should return None"
+    );
 }
 
 #[test]
@@ -196,7 +229,14 @@ fn test_get_time_until_deadline_released_returns_none() {
 
     let checkin_period_days = 30;
     let grace_period_days = 7;
-    let will_id = create_active_will(&env, &client, &owner, &token_address, checkin_period_days, grace_period_days);
+    let will_id = create_active_will(
+        &env,
+        &client,
+        &owner,
+        &token_address,
+        checkin_period_days,
+        grace_period_days,
+    );
 
     // Advance past check-in deadline
     env.ledger().with_mut(|l| l.timestamp += 31 * DAY);
@@ -207,7 +247,10 @@ fn test_get_time_until_deadline_released_returns_none() {
     client.release_inheritance(&will_id, &None);
 
     let time_until_deadline = client.get_time_until_deadline(&will_id);
-    assert!(time_until_deadline.is_none(), "Released status should return None");
+    assert!(
+        time_until_deadline.is_none(),
+        "Released status should return None"
+    );
 }
 
 #[test]
@@ -215,13 +258,23 @@ fn test_get_time_until_deadline_cancelled_returns_none() {
     let (env, client, owner, token_address) = setup();
 
     let checkin_period_days = 30;
-    let will_id = create_active_will(&env, &client, &owner, &token_address, checkin_period_days, 7);
+    let will_id = create_active_will(
+        &env,
+        &client,
+        &owner,
+        &token_address,
+        checkin_period_days,
+        7,
+    );
 
     // Cancel the will
     client.cancel_will(&will_id, &owner);
 
     let time_until_deadline = client.get_time_until_deadline(&will_id);
-    assert!(time_until_deadline.is_none(), "Cancelled status should return None");
+    assert!(
+        time_until_deadline.is_none(),
+        "Cancelled status should return None"
+    );
 }
 
 #[test]

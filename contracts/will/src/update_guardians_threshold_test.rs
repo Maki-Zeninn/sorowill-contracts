@@ -151,11 +151,8 @@ fn update_guardians_valid_shrink_then_cooldown_blocks_trigger() {
     client.update_guardians(&will_id, &owner, &vec![&env, g1.clone(), g2.clone()]);
 
     // Immediately try to trigger — the 7-day guardian cooldown must block it.
-    let result = client.try_guardian_trigger(
-        &will_id,
-        &g1,
-        &crate::GuardianVoteReason::Unreachable,
-    );
+    let result =
+        client.try_guardian_trigger(&will_id, &g1, &crate::GuardianVoteReason::Unreachable);
     assert_eq!(
         result,
         Err(Ok(WillError::GuardianCooldownActive.into())),

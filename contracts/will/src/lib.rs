@@ -31,7 +31,9 @@
 //! time (or via [`WillContract::update_guardians`]) and may vote once the
 //! guardian-list cooldown has elapsed. Guardian
 //! votes expire after a configurable window so stale votes cannot combine
-//! with fresh ones.
+//! with fresh ones: when a vote ages out and the same guardian votes again,
+//! the new vote *replaces* the expired one rather than adding to it, so one
+//! guardian can never reach the quorum threshold alone (#372).
 //!
 //! Two distribution modes are supported:
 //! - **Push mode** (default): `distribute` transfers tokens directly to each
@@ -45,8 +47,11 @@
 
 mod errors;
 mod events;
+mod batch_check_in_limit;
 mod storage;
 mod types;
+mod split_uniqueness_check;
+mod guardian_vote_freshness;
 
 /// Reusable harness that drives entry points with arbitrary input and asserts
 /// the contract's invariants. Shared by the `proptest` suite in
@@ -114,6 +119,8 @@ mod distribute_overflow_safety_test;
 /// reinitialising the vote-weight accumulator.
 #[cfg(test)]
 mod issue_183_test;
+#[cfg(test)]
+mod issue_414_test;
 
 /// Regression test for issue #184: `merge_wills` refuses mismatched primary tokens.
 #[cfg(test)]
@@ -138,6 +145,12 @@ mod merge_active_count_test;
 #[cfg(test)]
 mod merge_rounding_test;
 
+/// Regression tests for issues #383 (leftover refund on `FixedAmount`-only
+/// wills), #384 (`FixedAmount` denominated in the primary token) and #385
+/// (`distribute`'s doc block was attached to `proportional_share`).
+#[cfg(test)]
+mod issue_383_385_test;
+
 /// Regression test for issue #189: ensure `merge_wills` preserves `Allocation::FixedAmount`
 /// beneficiaries' fixed-amount semantics instead of converting to `Allocation::Percentage`.
 #[cfg(test)]
@@ -154,18 +167,24 @@ mod update_guardians_threshold_test;
 #[cfg(test)]
 mod issue_299_test;
 
+/// Regression tests for issues #350-#353: duplicate-token rejection and
+/// mirror/balances agreement (#350), real from/to statuses in the audit trail
+/// (#351), `confirm_will`/`close_will` history entries (#352), and per-token
+/// locked-value decrements on cancellation (#353).
+#[cfg(test)]
+mod issue_350_353_test;
+
 /// Regression test: `has_guardian_voted` / `has_guardian_cancel_voted` use a
 /// checked elapsed-time subtraction and cannot underflow when `now` precedes
 /// the recorded vote timestamp.
 #[cfg(test)]
 mod issue_guardian_vote_underflow_test;
 
-/// Regression tests for issue #375: `clone_will` and `split_will` copied
-/// `source.guardians` verbatim, so a guardian who had already accepted (or
-/// rejected) on the source will was carried over as `Accepted` on a brand-new
-/// will they were never asked about.
+/// Regression tests for issue #372: expired guardian votes are dropped from the
+/// `guardian_vote_weight` / `guardian_votes` tallies in both
+/// `guardian_trigger` and `guardian_cancel_trigger`.
 #[cfg(test)]
-mod issue_375_test;
+mod issue_372_test;
 
 // The following test modules exist as files but were never wired into this
 // module tree by the PRs that added them, so they silently never compiled or
@@ -227,6 +246,8 @@ mod issue_282_test;
 #[cfg(test)]
 mod issue_298_283_294_test;
 #[cfg(test)]
+mod issue_390_test;
+#[cfg(test)]
 mod migrate_will_test;
 #[cfg(test)]
 mod protocol_stats_test;
@@ -236,6 +257,10 @@ mod renounce_validation_test;
 mod set_delegate_test;
 #[cfg(test)]
 mod split_will_test;
+#[cfg(test)]
+mod issue_420_test;
+#[cfg(test)]
+mod issue_422_test;
 // NOTE: `test.rs` (5800+ lines) is intentionally NOT wired in here. It
 // predates the current multi-token/Allocation-enum contract API entirely
 // (it exclusively uses a removed single-token `basis_points` signature) and
@@ -271,7 +296,7 @@ pub use types::{
 /// [`WillContract::get_contract_version`].
 ///
 /// Current baseline: **1.0.0** → `1_000_000`.
-pub const CONTRACT_VERSION: u32 = 1_000_000;
+pub const CONTRACT_VERSION: u32 = 1_000_001;
 
 /// Number of seconds in a day, used to convert the day-denominated periods
 /// stored on a `Will` into absolute ledger timestamps.
@@ -301,6 +326,18 @@ const MAX_GUARDIANS: u32 = 3;
 const MAX_PERIOD_DAYS: u64 = 3_650;
 /// Maximum number of distinct tokens a single will may hold.
 const MAX_TOKENS: u32 = 10;
+
+/// Exact byte length of a hashed beneficiary's pre-image: 32 raw address bytes
+/// followed by a 32-byte salt chosen by the beneficiary at registration time.
+///
+/// `reveal_and_claim` enforces this length *before* hashing and rejects anything
+/// else with [`WillError::InvalidPreimageLength`], rather than letting a
+/// wrong-length input fall through to a generic
+/// [`WillError::InvalidPreimage`] after a wasted SHA-256 (#370). Fixed here
+/// because a commitment is a SHA-256 digest, so an owner who registers a
+/// commitment over a different-length pre-image can never produce a matching
+/// reveal.
+pub const PREIMAGE_LENGTH: u32 = 64;
 
 /// Number of distinct guardian votes required to force an early release.
 ///
@@ -344,7 +381,10 @@ soroban_sdk::contractmeta!(
 );
 // Kept in sync with CONTRACT_VERSION's semver-decoded form by
 // issue_272_test.rs; bump both together.
-soroban_sdk::contractmeta!(key = "Version", val = "1.0.0");
+soroban_sdk::contractmeta!(
+    key = "Version",
+    val = "1.0.1"
+);
 soroban_sdk::contractmeta!(
     key = "Homepage",
     val = "https://github.com/SoroWill/sorowill-contracts"
@@ -370,8 +410,14 @@ impl WillContract {
     /// - `tokens`: a list of `(token_address, amount)` pairs to lock. Each
     ///   token address must be unique, each amount must be positive, and the
     ///   list must contain between 1 and `MAX_TOKENS` entries.
-    /// - `beneficiaries`: 1 to `MAX_BENEFICIARIES` entries whose basis points
-    ///   sum to exactly 10,000.
+    /// - `beneficiaries`: 1 to `MAX_BENEFICIARIES` entries. Percentage
+    ///   allocations must sum to exactly 10,000 basis points; fixed amounts
+    ///   are denominated in the will's **primary token** (the first entry of
+    ///   `tokens`) and their sum must not exceed that token's amount. A list
+    ///   made up only of `Allocation::FixedAmount` entries may leave value
+    ///   unallocated — whatever the fixed amounts do not claim is refunded to
+    ///   the owner when the inheritance is released (see [`Allocation`] and
+    ///   issue #383).
     /// - `checkin_period_days`: how many days the owner may go without checking
     ///   in; 1 to `MAX_PERIOD_DAYS`.
     /// - `grace_period_days`: how many days after being triggered the owner has
@@ -387,11 +433,15 @@ impl WillContract {
     ///
     /// # Panics
     /// - [`WillError::ZeroAmount`] if any token amount is not positive.
-    /// - [`WillError::TooManyBeneficiaries`] if the beneficiary/guardian/token lists are
-    ///   empty or exceed their respective caps.
+    /// - [`WillError::TooManyBeneficiaries`] if the beneficiary or guardian
+    ///   lists are empty or exceed their respective caps.
+    /// - [`WillError::InvalidTokenCount`] if the token list is empty or
+    ///   exceeds `MAX_TOKENS`.
     /// - [`WillError::InvalidPercentages`] if beneficiary basis points do not sum to 10,000.
     /// - [`WillError::DuplicateBeneficiary`] if the same address is supplied twice.
     /// - [`WillError::DuplicateGuardian`] if the same guardian is supplied twice.
+    /// - [`WillError::DuplicateToken`] if the same token address appears more
+    ///   than once in `tokens`.
     /// - [`WillError::InvalidPeriod`] if either period is zero or exceeds
     ///   [`MAX_PERIOD_DAYS`].
     /// - [`WillError::InvalidToken`] if any supplied token address does not respond to a
@@ -460,7 +510,19 @@ impl WillContract {
         };
 
         if tokens.is_empty() || tokens.len() > MAX_TOKENS {
-            panic_with_error!(&env, WillError::TooManyBeneficiaries);
+            panic_with_error!(&env, WillError::InvalidTokenCount);
+        }
+        // Reject duplicate token addresses up front, before any transfer
+        // happens. The rustdoc for this function promises each token address
+        // is unique; letting a duplicate through would additionally make the
+        // legacy `balance` mirror (derived from the first entry) disagree with
+        // the accumulated `balances` map (#350).
+        let mut seen_tokens: Vec<Address> = Vec::new(&env);
+        for (token_addr, _) in tokens.iter() {
+            if seen_tokens.contains(&token_addr) {
+                panic_with_error!(&env, WillError::DuplicateToken);
+            }
+            seen_tokens.push_back(token_addr);
         }
         if beneficiaries.is_empty() || beneficiaries.len() > MAX_BENEFICIARIES {
             panic_with_error!(&env, WillError::TooManyBeneficiaries);
@@ -515,14 +577,20 @@ impl WillContract {
                 &env.current_contract_address(),
                 &amount,
             );
-            // Accumulate in case the caller somehow duplicated the same token
-            // address twice — treat it as an additive top-up rather than
-            // silently overwriting.
+            // Duplicates were rejected above, so this is a plain insert; the
+            // additive accumulation is kept so the intent stays explicit.
             let prev = balances.get(token_addr.clone()).unwrap_or(0);
             balances.set(token_addr, prev + amount);
         }
 
-        assert_valid_allocations(&env, &beneficiaries, total_balance(&balances));
+        // Fixed amounts are denominated in the will's primary token, which is
+        // the first entry of `tokens` (mirrored into `Will::token` below).
+        let (primary_token, primary_amount) = tokens.get_unchecked(0);
+        assert_valid_allocations(
+            &env,
+            &beneficiaries,
+            primary_token_balance(&balances, &primary_token),
+        );
 
         let will_id = storage::next_will_id(&env);
         let now = env.ledger().timestamp();
@@ -545,8 +613,11 @@ impl WillContract {
         // `token`/`balance` mirror the first locked token for backward
         // compatibility with single-token helpers (merge_wills, split_will,
         // reveal_and_claim); `balances` above is the authoritative
-        // multi-token source of truth.
-        let (primary_token, primary_balance) = tokens.get_unchecked(0);
+        // multi-token source of truth. Derive the mirror from the accumulated
+        // map (rather than re-reading the first `tokens` entry) so `balance`
+        // can never disagree with `balances[token]` (#350).
+        let (primary_token, _) = tokens.get_unchecked(0);
+        let primary_balance = balances.get(primary_token.clone()).unwrap_or(0);
 
         let will = Will {
             id: will_id,
@@ -554,7 +625,7 @@ impl WillContract {
             balances,
             token: primary_token,
             is_native: false,
-            balance: primary_balance,
+            balance: primary_amount,
             beneficiaries,
             hashed_beneficiaries: Vec::new(&env),
             checkin_period_days,
@@ -583,11 +654,16 @@ impl WillContract {
             storage::adjust_locked_value(&env, &token_addr, amount);
         }
 
+        // Record the will's real initial status as both endpoints of this
+        // self-transition: `Active -> Active` when it starts immediately, and
+        // `PendingConfirmation -> PendingConfirmation` when a confirmation
+        // delay is in effect. Recording a hardcoded `Active` here would hide
+        // the real `PendingConfirmation` state from `get_will_history` (#351).
         record_transition(
             &env,
             will_id,
-            WillStatus::Active,
-            WillStatus::Active,
+            status,
+            status,
             &owner,
             symbol_short!("create"),
         );
@@ -635,6 +711,17 @@ impl WillContract {
         will.last_checkin = now;
         will.confirmation_deadline = None;
         storage::save_will(&env, &will);
+
+        // Record the confirmation in the audit trail so `get_will_history`
+        // can reconstruct the full lifecycle (#352).
+        record_transition(
+            &env,
+            will_id,
+            WillStatus::PendingConfirmation,
+            WillStatus::Active,
+            &owner,
+            symbol_short!("confirm"),
+        );
 
         events::will_confirmed(&env, will_id, &owner);
     }
@@ -697,8 +784,12 @@ impl WillContract {
     /// Batch check-in across multiple wills in a single transaction.
     /// All wills must be owned by `owner` and in `Active` status.
     /// Panics if any will ID is invalid, not owned by `owner`, or not `Active`.
+    ///
+    /// At most `batch_check_in_limit::MAX_BATCH_CHECK_IN` (50) IDs are accepted
+    /// per call; longer inputs panic with [`WillError::BatchTooLarge`].
     pub fn batch_check_in(env: Env, will_ids: Vec<u64>, owner: Address) {
         owner.require_auth();
+        batch_check_in_limit::assert_within_limit(&env, will_ids.len());
         let now = env.ledger().timestamp();
         let count = will_ids.len();
 
@@ -896,15 +987,26 @@ impl WillContract {
         }
 
         // Snapshot the balances before mutating state (checks-effects-interactions).
-        let refund = will.balance;
         let contract_address = env.current_contract_address();
         let token_count = will.balances.len();
         // Capture balances for transfer after state is committed.
         let balances_snapshot = will.balances.clone();
+        // `cancel_will` accepts both `Active` and `PendingConfirmation`, so the
+        // audit trail must record whichever state the will actually cancelled
+        // from rather than a hardcoded `Active` (#351).
+        let prior_status = will.status;
 
         // --- EFFECTS: mutate state and persist before any external calls ---
         storage::decrement_active_will_count(&env);
-        storage::adjust_locked_value(&env, &will.token, -refund);
+        // Decrement the protocol locked-value total for *every* token the will
+        // held, not just the primary-token mirror, so a multi-token
+        // cancellation does not leave the other tokens' totals permanently
+        // inflated (#353).
+        for (token_addr, balance) in balances_snapshot.iter() {
+            if balance > 0 {
+                storage::adjust_locked_value(&env, &token_addr, -balance);
+            }
+        }
 
         will.balance = 0;
         will.balances = Map::new(&env);
@@ -923,7 +1025,7 @@ impl WillContract {
         record_transition(
             &env,
             will_id,
-            WillStatus::Active,
+            prior_status,
             WillStatus::Cancelled,
             &owner,
             symbol_short!("cancel"),
@@ -959,6 +1061,17 @@ impl WillContract {
         will.status = WillStatus::Settled;
         storage::save_will(&env, &will);
 
+        // Record the Released -> Settled transition so the audit trail from
+        // `get_will_history` has no gaps (#352).
+        record_transition(
+            &env,
+            will_id,
+            WillStatus::Released,
+            WillStatus::Settled,
+            &owner,
+            symbol_short!("close"),
+        );
+
         events::will_closed(&env, will_id, &owner);
     }
 
@@ -984,7 +1097,11 @@ impl WillContract {
         if beneficiaries.is_empty() || beneficiaries.len() > MAX_BENEFICIARIES {
             panic_with_error!(&env, WillError::TooManyBeneficiaries);
         }
-        assert_valid_allocations(&env, &beneficiaries, total_balance(&will.balances));
+        assert_valid_allocations(
+            &env,
+            &beneficiaries,
+            primary_token_balance(&will.balances, &will.token),
+        );
 
         // Only addresses that actually join or leave the will need their
         // reverse index touched. Unconditionally removing every old address
@@ -1165,8 +1282,11 @@ impl WillContract {
         storage::remove_beneficiary_index(&env, &beneficiary, will_id);
 
         // Validate the redistributed beneficiary allocations
-        let will_balance = total_balance(&will.balances);
-        assert_valid_allocations(&env, &will.beneficiaries, will_balance);
+        assert_valid_allocations(
+            &env,
+            &will.beneficiaries,
+            primary_token_balance(&will.balances, &will.token),
+        );
 
         // Get the owner for event emission (not changed)
         let owner = will.owner.clone();
@@ -1404,7 +1524,11 @@ impl WillContract {
             if new_beneficiaries.is_empty() || new_beneficiaries.len() > MAX_BENEFICIARIES {
                 panic_with_error!(&env, WillError::TooManyBeneficiaries);
             }
-            assert_valid_allocations(&env, &new_beneficiaries, total_balance(&will.balances));
+            assert_valid_allocations(
+                &env,
+                &new_beneficiaries,
+                primary_token_balance(&will.balances, &will.token),
+            );
 
             // Update reverse indexes
             for old in will.beneficiaries.iter() {
@@ -1869,6 +1993,17 @@ impl WillContract {
     /// - [`WillError::NotGuardian`] if `guardian` is not one of the will's guardians.
     /// - [`WillError::AlreadyVoted`] if `guardian` already voted in this cycle.
     /// - [`WillError::GuardianCooldownActive`] if the guardian-list cooldown has not elapsed.
+    ///
+    /// # Vote expiry and recounting
+    ///
+    /// A vote stops counting once it is older than the will's
+    /// `grace_period_days`, after which the same guardian may vote again. When
+    /// they do, the accumulated `guardian_vote_weight` / `guardian_votes` are
+    /// **recomputed from the vote records that are still live**, so the new vote
+    /// replaces the expired one rather than being added on top of it (#372). One
+    /// guardian therefore cannot reach `guardian_threshold` alone by voting once
+    /// per expiry window. The same recounting applies to
+    /// [`guardian_cancel_trigger`]'s cancel-vote counters.
     pub fn guardian_trigger(env: Env, will_id: u64, guardian: Address, reason: GuardianVoteReason) {
         guardian.require_auth();
         let mut will = load_will(&env, will_id);
@@ -1898,13 +2033,23 @@ impl WillContract {
         }
 
         storage::set_guardian_voted(&env, will_id, &guardian, now, reason);
-        will.guardian_vote_weight += weight;
-        will.guardian_votes += 1;
+        // Recount from the vote records that are still live rather than adding
+        // to the persisted counters: a record that has already aged past the
+        // expiry window no longer counts, so voting again after expiry replaces
+        // the old vote rather than stacking on top of it (#372). Without this a
+        // single guardian could vote once per grace period and reach the
+        // threshold alone.
+        let (live_weight, live_votes) = storage::recount_guardian_votes(&env, &will, now, expiry_days);
+        will.guardian_vote_weight = live_weight;
+        will.guardian_votes = live_votes;
         storage::save_will(&env, &will);
 
         events::guardian_voted(&env, will_id, &guardian, weight, will.guardian_vote_weight);
 
-        if will.guardian_vote_weight >= will.guardian_threshold {
+        if will.guardian_vote_weight >= will.guardian_threshold
+            && guardian_vote_freshness::live_guardian_vote_weight(&env, will_id, &will, now)
+                >= will.guardian_threshold
+        {
             record_transition(
                 &env,
                 will_id,
@@ -1934,12 +2079,25 @@ impl WillContract {
     /// (starting a fresh check-in countdown), and all cancel-vote records are
     /// cleared.
     ///
+    /// # Grace period
+    ///
+    /// A cancel vote is only meaningful *during* the grace period, and this
+    /// entrypoint enforces the same deadline [`emergency_checkin`] does: once
+    /// `trigger_time + grace_period_days` has passed, the cancel is rejected
+    /// with [`WillError::GracePeriodExpired`] and the will can no longer be
+    /// rewound to `Active`. Without that check a guardian quorum could undo an
+    /// expired trigger *after* the funds had already become releasable through
+    /// [`release_inheritance`], and could repeat the trick every check-in cycle
+    /// to block the release indefinitely (#373).
+    ///
     /// # Parameters
     /// - `will_id`: the will whose trigger should be cancelled.
     /// - `guardian`: the guardian casting the cancel vote; must authorize.
     ///
     /// # Panics
     /// - [`WillError::WillNotTriggered`] if the will is not `Triggered`.
+    /// - [`WillError::GracePeriodExpired`] if the will's grace period has
+    ///   already elapsed (#373).
     /// - [`WillError::NotGuardian`] if `guardian` is not one of the will's guardians.
     /// - [`WillError::AlreadyVoted`] if `guardian` already cast a cancel vote in this cycle.
     /// - [`WillError::GuardianCooldownActive`] if the guardian-list cooldown has not elapsed.
@@ -1953,8 +2111,20 @@ impl WillContract {
             WillError::WillNotTriggered,
         );
 
-        // Enforce guardian-list cooldown (same rule as guardian_trigger).
         let now = env.ledger().timestamp();
+
+        // The grace period is the window in which a trigger may still be undone.
+        // Past it the estate is releasable via `release_inheritance`, so a
+        // cancel quorum must not be able to rewind the will to `Active` and
+        // restart the check-in clock (#373) -- same rule `emergency_checkin`
+        // enforces, so a guardian quorum and the owner are held to one deadline.
+        let trigger_time = will.trigger_time.unwrap_or(0);
+        let grace_deadline = trigger_time + will.grace_period_days * SECONDS_PER_DAY;
+        if now > grace_deadline {
+            panic_with_error!(&env, WillError::GracePeriodExpired);
+        }
+
+        // Enforce guardian-list cooldown (same rule as guardian_trigger).
         let cooldown_seconds = GUARDIAN_COOLDOWN_DAYS * SECONDS_PER_DAY;
         let cooldown_ends = will.guardian_list_updated_at + cooldown_seconds;
         if now < cooldown_ends {
@@ -1979,8 +2149,13 @@ impl WillContract {
         }
 
         storage::set_guardian_cancel_voted(&env, will_id, &guardian, now);
-        will.guardian_cancel_vote_weight += weight;
-        will.guardian_cancel_votes += 1;
+        // Same recount-from-live-records rule as `guardian_trigger`: an expired
+        // cancel vote is replaced, not accumulated, so one guardian cannot reach
+        // the cancel threshold alone by voting once per grace period (#372).
+        let (live_weight, live_votes) =
+            storage::recount_guardian_cancel_votes(&env, &will, now, expiry_days);
+        will.guardian_cancel_vote_weight = live_weight;
+        will.guardian_cancel_votes = live_votes;
         storage::save_will(&env, &will);
 
         events::guardian_cancel_voted(
@@ -2146,7 +2321,7 @@ impl WillContract {
     /// - [`WillError::WillNotActive`] if the source will is not `Active` or
     ///   `Triggered`.
     /// - [`WillError::ZeroAmount`] if any token amount is not positive.
-    /// - [`WillError::TooManyBeneficiaries`] if the token list is empty or too large.
+    /// - [`WillError::InvalidTokenCount`] if the token list is empty or too large.
     /// - [`WillError::FixedAmountExceedsBalance`] if the source's
     ///   `Allocation::FixedAmount` beneficiaries no longer fit the new balance.
     #[allow(clippy::too_many_arguments)]
@@ -2159,7 +2334,7 @@ impl WillContract {
         owner.require_auth();
 
         if tokens.is_empty() || tokens.len() > MAX_TOKENS {
-            panic_with_error!(&env, WillError::TooManyBeneficiaries);
+            panic_with_error!(&env, WillError::InvalidTokenCount);
         }
 
         let source = load_will(&env, source_will_id);
@@ -2197,8 +2372,15 @@ impl WillContract {
         // Re-validate `FixedAmount` beneficiaries against the clone's new
         // balance (#239): funding a clone with less than the original
         // fixed-amount commitments must fail loudly here rather than
-        // silently under-paying at distribute() time.
-        assert_valid_allocations(&env, &source.beneficiaries, total_balance(&balances));
+        // silently under-paying at distribute() time. Fixed amounts are
+        // denominated in the clone's primary token, the first entry of
+        // `tokens` (#384).
+        let (primary_token, primary_amount) = tokens.get_unchecked(0);
+        assert_valid_allocations(
+            &env,
+            &source.beneficiaries,
+            primary_token_balance(&balances, &primary_token),
+        );
 
         let will_id = storage::next_will_id(&env);
         let now = env.ledger().timestamp();
@@ -2208,15 +2390,13 @@ impl WillContract {
             storage::index_by_beneficiary(&env, &beneficiary.address, will_id);
         }
 
-        let (primary_token, primary_balance) = tokens.get_unchecked(0);
-
         let will = Will {
             id: will_id,
             owner: owner.clone(),
             balances,
             token: primary_token,
             is_native: false,
-            balance: primary_balance,
+            balance: primary_amount,
             beneficiaries: source.beneficiaries.clone(),
             hashed_beneficiaries: Vec::new(&env),
             checkin_period_days: source.checkin_period_days,
@@ -2276,7 +2456,10 @@ impl WillContract {
     ///
     /// # Panics
     /// - [`WillError::TooManyBeneficiaries`] if the batch is empty or exceeds
-    ///   [`BATCH_MAX`], or if any individual spec violates beneficiary/guardian/token caps.
+    ///   [`BATCH_MAX`], or if any individual spec violates the
+    ///   beneficiary/guardian caps.
+    /// - [`WillError::InvalidTokenCount`] if any individual spec's token list
+    ///   is empty or exceeds `MAX_TOKENS`.
     /// - Any error that [`create_will`] would panic with for an individual spec.
     #[allow(clippy::too_many_arguments, clippy::type_complexity)]
     pub fn batch_create_wills(
@@ -2311,7 +2494,17 @@ impl WillContract {
             // Inline the validation + creation logic (mirrors create_will)
             // to avoid re-authorizing per will.
             if tokens.is_empty() || tokens.len() > MAX_TOKENS {
-                panic_with_error!(&env, WillError::TooManyBeneficiaries);
+                panic_with_error!(&env, WillError::InvalidTokenCount);
+            }
+            // Mirror `create_will`'s duplicate-token rejection so a batch spec
+            // can never produce a will whose `balance` mirror disagrees with
+            // its `balances` map (#350).
+            let mut seen_tokens: Vec<Address> = Vec::new(&env);
+            for (token_addr, _) in tokens.iter() {
+                if seen_tokens.contains(&token_addr) {
+                    panic_with_error!(&env, WillError::DuplicateToken);
+                }
+                seen_tokens.push_back(token_addr);
             }
             if beneficiaries.is_empty() || beneficiaries.len() > MAX_BENEFICIARIES {
                 panic_with_error!(&env, WillError::TooManyBeneficiaries);
@@ -2339,7 +2532,14 @@ impl WillContract {
                 balances.set(token_addr, prev + amount);
             }
 
-            assert_valid_allocations(&env, &beneficiaries, total_balance(&balances));
+            // Fixed amounts are denominated in the primary token, the first
+            // entry of `tokens` (#384).
+            let (primary_token, primary_amount) = tokens.get_unchecked(0);
+            assert_valid_allocations(
+                &env,
+                &beneficiaries,
+                primary_token_balance(&balances, &primary_token),
+            );
 
             let mut guardian_structs: Vec<Guardian> = Vec::new(&env);
             for addr in guardians.iter() {
@@ -2358,7 +2558,8 @@ impl WillContract {
                 storage::index_by_beneficiary(&env, &beneficiary.address, will_id);
             }
 
-            let (primary_token, primary_balance) = tokens.get_unchecked(0);
+            let (primary_token, _) = tokens.get_unchecked(0);
+            let primary_balance = balances.get(primary_token.clone()).unwrap_or(0);
 
             let will = Will {
                 id: will_id,
@@ -2366,7 +2567,7 @@ impl WillContract {
                 balances,
                 token: primary_token,
                 is_native: false,
-                balance: primary_balance,
+                balance: primary_amount,
                 beneficiaries,
                 hashed_beneficiaries: Vec::new(&env),
                 checkin_period_days,
@@ -2608,10 +2809,57 @@ impl WillContract {
         );
     }
 
-    /// Returns the full audit trail for `will_id`, recording every status
+    /// Returns the audit trail for `will_id`, recording every status
     /// transition since creation.
+    ///
+    /// # Bounded length
+    ///
+    /// The retained trail holds at most [`storage::MAX_HISTORY_ENTRIES`]
+    /// transitions. Once a will exceeds that many — a long-lived will cycling
+    /// `Active` → `Triggered` → `Active` through repeated emergency check-ins —
+    /// the **oldest** entry is dropped to make room, so this always returns the
+    /// most recent transitions, oldest-first. The cap keeps the persistent
+    /// `WillHistory` entry inside Soroban's per-entry size limit and keeps this
+    /// read bounded (#392).
+    ///
+    /// For the full, untrimmed history, follow the off-chain event log: every
+    /// state-mutating entry point publishes an event, and that log is never
+    /// trimmed. Callers who want to walk the retained trail in bounded slices
+    /// should prefer [`WillContract::get_will_history_page`].
     pub fn get_will_history(env: Env, will_id: u64) -> Vec<WillStatusTransition> {
         storage::get_history(&env, will_id)
+    }
+
+    /// Returns a bounded page of `will_id`'s audit trail, oldest-first.
+    ///
+    /// The paged counterpart to [`WillContract::get_will_history`], for callers
+    /// that would rather not pull the whole retained trail in one call. The
+    /// trail is itself capped at [`storage::MAX_HISTORY_ENTRIES`] transitions
+    /// (#392); this bounds the *per-call* cost on top of that.
+    ///
+    /// # Parameters
+    /// - `will_id`: the will whose trail to read.
+    /// - `cursor`: optional zero-based offset into the trail. Pass `None` or `0`
+    ///   for the first page.
+    /// - `limit`: maximum number of transitions to return. Capped at
+    ///   [`storage::MAX_PAGE_SIZE`].
+    ///
+    /// # Pagination
+    /// 1. Call with `cursor=None, limit=N`.
+    /// 2. If the page has `N` entries, call again with `cursor = offset + N`.
+    /// 3. Repeat until a page comes back shorter than `N`.
+    ///
+    /// The cursor is positional, not keyed. It is stable for the duration of a
+    /// walk as long as no transition is appended past the cursor, but a
+    /// concurrent write that trips the history cap trims the front of the
+    /// trail and shifts every earlier offset — restart the walk in that case.
+    pub fn get_will_history_page(
+        env: Env,
+        will_id: u64,
+        cursor: Option<u32>,
+        limit: u32,
+    ) -> Vec<WillStatusTransition> {
+        storage::paginate_history(&env, will_id, cursor, limit)
     }
 
     /// Archives a Released or Cancelled will, removing it from active
@@ -2625,6 +2873,21 @@ impl WillContract {
     /// costs. The design is intentional — a will's final asset distributions
     /// are already complete before this point — but it creates an observable
     /// race condition described below.
+    ///
+    /// # What archival removes
+    ///
+    /// Beyond the will entry and the owner/beneficiary/Triggered indexes,
+    /// archival also drops the will's on-chain `WillHistory` entry and every
+    /// `GuardianVote` / `GuardianCancelVote` entry belonging to its guardians
+    /// (#393). Those keys are only ever read to describe a *live* will, so
+    /// leaving them behind would strand ledger state — paid for out of the
+    /// protocol's rent — for entries no query can resolve. See
+    /// [`storage::archive_will`] for the full reasoning.
+    ///
+    /// **Clients must not treat [`WillContract::get_will_history`] as a
+    /// post-archival recovery path** — it returns an empty trail for an archived
+    /// will. Use the off-chain event log, which is never trimmed and is the
+    /// durable audit record.
     ///
     /// # Race condition: permissionless archival and `WillNotFound` ambiguity
     ///
@@ -2655,9 +2918,8 @@ impl WillContract {
     /// 1. **Explicitly archived** — the will completed its lifecycle, funds
     ///    were distributed, and a third party (or the owner) called
     ///    `archive_will`. This is the normal post-release state and requires
-    ///    no recovery. The final state is recoverable from the on-chain audit
-    ///    trail via [`WillContract::get_will_history`] while that entry's own
-    ///    TTL is still live.
+    ///    no recovery. The final state is recoverable from the off-chain
+    ///    event log, which archival does not touch.
     /// 2. **Network TTL expiry** — the will's persistent entry lapsed.
     ///    Terminal wills stop renewing their TTL (see `storage::save_will`),
     ///    so Released/Cancelled wills gradually expire. The entry can be
@@ -2728,7 +2990,7 @@ impl WillContract {
     ///
     /// # Panics
     /// - [`WillError::NotOwner`] / [`WillError::WillNotActive`]
-    /// - [`WillError::TooManyBeneficiaries`] if `tokens` is empty or exceeds
+    /// - [`WillError::InvalidTokenCount`] if `tokens` is empty or exceeds
     ///   `MAX_TOKENS`.
     /// - [`WillError::ZeroAmount`] if any token amount is not positive.
     /// - [`WillError::InsufficientBalance`] if a requested token amount
@@ -2750,11 +3012,12 @@ impl WillContract {
         assert_status(&env, &source, WillStatus::Active, WillError::WillNotActive);
 
         if tokens.is_empty() || tokens.len() > MAX_TOKENS {
-            panic_with_error!(&env, WillError::TooManyBeneficiaries);
+            panic_with_error!(&env, WillError::InvalidTokenCount);
         }
         if beneficiaries_to_split.is_empty() {
             panic_with_error!(&env, WillError::InvalidSplit);
         }
+        split_uniqueness_check::assert_split_addresses_unique(&env, &beneficiaries_to_split);
 
         // Accumulate requested amounts per token (duplicates are additive),
         // then verify each against what the source will actually holds.
@@ -2817,8 +3080,16 @@ impl WillContract {
         // balance before committing anything (#239): a split funded with
         // less than the original fixed-amount commitments must fail loudly
         // here rather than silently under-paying at distribute() time.
-        assert_valid_allocations(&env, &normalised_remaining, total_balance(&source.balances));
-        assert_valid_allocations(&env, &normalised_split, total_balance(&child_balances));
+        assert_valid_allocations(
+            &env,
+            &normalised_remaining,
+            primary_token_balance(&source.balances, &source.token),
+        );
+        assert_valid_allocations(
+            &env,
+            &normalised_split,
+            primary_token_balance(&child_balances, &primary_token),
+        );
 
         // Remove split-off beneficiaries from the source index and add them to
         // the child's index.
@@ -2894,11 +3165,35 @@ impl WillContract {
     /// - `will_id`: the will to add the hashed beneficiary to.
     /// - `owner`: must be the primary owner.
     /// - `commitment`: SHA-256 hash of the pre-image `address_bytes || salt_bytes`.
-    /// - `percentage`: share of the will's balance for this beneficiary.
+    ///   Must be exactly 32 bytes — see the validation rules below.
+    /// - `percentage`: share of the will's balance for this beneficiary, in
+    ///   basis points. Must be greater than zero.
+    ///
+    /// # Validation
+    ///
+    /// A commitment is only useful if some pre-image can ever hash to it, and
+    /// only claimable if exactly one slot matches it, so this entry point
+    /// rejects three shapes that would otherwise strand a reserved share
+    /// forever (#371):
+    ///
+    /// - A `commitment` that is not exactly 32 bytes cannot be a SHA-256
+    ///   digest, so no pre-image can ever match it
+    ///   ([`WillError::InvalidCommitmentLength`]).
+    /// - A `commitment` already present on this will is rejected
+    ///   ([`WillError::DuplicateCommitment`]): [`reveal_and_claim`] always
+    ///   matches the *first* slot, so the second would be unclaimable.
+    /// - A `percentage` of 0 reserves no funds but still occupies a slot and
+    ///   dilutes every other hashed beneficiary's share of the withheld pool
+    ///   ([`WillError::InvalidPercentages`]), mirroring how
+    ///   `assert_valid_allocations` rejects a zero percentage for a visible
+    ///   beneficiary.
     ///
     /// # Panics
     /// - [`WillError::NotOwner`] / [`WillError::WillNotActive`]
-    /// - [`WillError::InvalidPercentages`] if total percentages would exceed 100.
+    /// - [`WillError::InvalidCommitmentLength`] if `commitment` is not exactly 32 bytes.
+    /// - [`WillError::DuplicateCommitment`] if `commitment` is already registered on this will.
+    /// - [`WillError::InvalidPercentages`] if `percentage` is zero, or if total
+    ///   percentages would exceed 100.
     pub fn add_hashed_beneficiary(
         env: Env,
         will_id: u64,
@@ -2909,6 +3204,15 @@ impl WillContract {
         owner.require_auth();
         let mut will = load_owned(&env, will_id, &owner);
         assert_status(&env, &will, WillStatus::Active, WillError::WillNotActive);
+
+        // Validate the new slot before mutating the will, so a rejected call
+        // leaves no partial state behind (#371).
+        assert_valid_hashed_beneficiary(
+            &env,
+            &will.hashed_beneficiaries,
+            &commitment,
+            percentage,
+        );
 
         will.hashed_beneficiaries.push_back(HashedBeneficiary {
             commitment: commitment.clone(),
@@ -2927,9 +3231,11 @@ impl WillContract {
     /// Verifies a pre-image against a stored commitment hash and, if correct,
     /// immediately transfers that beneficiary's share to the revealed address.
     ///
-    /// The pre-image must be 64 bytes: the first 32 bytes are the raw bytes of
-    /// the beneficiary `Address` and the remaining 32 bytes are a random salt
-    /// chosen by the beneficiary at registration time.
+    /// The pre-image must be exactly [`PREIMAGE_LENGTH`] bytes: the first 32
+    /// bytes are the raw bytes of the beneficiary `Address` and the remaining
+    /// 32 bytes are a random salt chosen by the beneficiary at registration
+    /// time. This length is checked before hashing; anything else is rejected
+    /// with [`WillError::InvalidPreimageLength`] (#370).
     ///
     /// This entrypoint works once the will is `Released`: `distribute()`
     /// withholds every unclaimed hashed beneficiary's combined percentage
@@ -2942,11 +3248,17 @@ impl WillContract {
     /// # Parameters
     /// - `will_id`: the will to claim from.
     /// - `claimant`: the address that will receive the funds; must authorise.
-    /// - `preimage`: raw bytes whose SHA-256 must match a stored commitment.
+    /// - `preimage`: raw bytes of exactly [`PREIMAGE_LENGTH`] bytes whose
+    ///   SHA-256 must match a stored commitment.
     ///
     /// # Panics
     /// - [`WillError::WillNotReleased`] if the will is not `Released`.
-    /// - [`WillError::InvalidPreimage`] if no matching commitment is found.
+    /// - [`WillError::InvalidPreimageLength`] if `preimage` is not exactly
+    ///   [`PREIMAGE_LENGTH`] bytes. Checked before hashing, so the empty, short
+    ///   or over-long pre-image fails with this error rather than the generic
+    ///   [`WillError::InvalidPreimage`] (#370).
+    /// - [`WillError::InvalidPreimage`] if a correctly-sized pre-image matches no
+    ///   stored commitment.
     /// - [`WillError::AlreadyClaimed`] if that slot was already claimed.
     pub fn reveal_and_claim(env: Env, will_id: u64, claimant: Address, preimage: Bytes) {
         claimant.require_auth();
@@ -2961,6 +3273,15 @@ impl WillContract {
             WillStatus::Released,
             WillError::WillNotReleased,
         );
+
+        // Reject a wrong-length pre-image before doing anything with it (#370).
+        // The documented pre-image layout is 32 address bytes plus a 32-byte
+        // salt, so any other length can never be a valid reveal; catching it
+        // here also avoids paying for a SHA-256 over attacker-controlled bytes
+        // and keeps the failure distinguishable from a genuine mismatch.
+        if preimage.len() != PREIMAGE_LENGTH {
+            panic_with_error!(&env, WillError::InvalidPreimageLength);
+        }
 
         // Hash the supplied pre-image with SHA-256.
         let digest = env.crypto().sha256(&preimage);
@@ -3125,7 +3446,8 @@ fn names_address(beneficiaries: &Vec<Beneficiary>, address: &Address) -> bool {
 }
 
 /// Asserts a beneficiary list's allocations are internally consistent and
-/// affordable against `will_balance`:
+/// affordable against `primary_balance`, the will's balance in its primary
+/// token ([`Will::token`]):
 ///
 /// - No address may appear more than once (the beneficiary index only stores
 ///   one entry per address, so a repeat would silently drop one of the
@@ -3135,12 +3457,17 @@ fn names_address(beneficiaries: &Vec<Beneficiary>, address: &Address) -> bool {
 ///   whatever remains once fixed amounts are set aside) — this guarantees
 ///   every token balance is fully distributed with no dust left behind.
 /// - Every `Allocation::FixedAmount` must be positive, and the sum of every
-///   fixed amount on the will must never exceed `will_balance` — otherwise
-///   `distribute` could not pay every fixed beneficiary in full.
+///   fixed amount on the will must never exceed `primary_balance` —
+///   otherwise `distribute` could not pay every fixed beneficiary in full.
+///   Fixed amounts are denominated in the primary token only, so this is
+///   deliberately *not* the sum across every token the will holds (#384):
+///   comparing against a sum of unrelated tokens (with unrelated decimals)
+///   would approve a will that `distribute` cannot pay out in full.
 /// - A will made up entirely of `FixedAmount` beneficiaries (no percentage
-///   beneficiaries at all) must account for the *whole* balance, since
-///   nobody is left to receive a "remainder" split.
-fn assert_valid_allocations(env: &Env, beneficiaries: &Vec<Beneficiary>, will_balance: i128) {
+///   beneficiaries at all) is allowed to account for less than the whole
+///   balance; the unallocated remainder is refunded to the owner at
+///   distribute time rather than left stranded in the contract (#383).
+fn assert_valid_allocations(env: &Env, beneficiaries: &Vec<Beneficiary>, primary_balance: i128) {
     let mut percentage_total: u32 = 0;
     let mut fixed_total: i128 = 0;
     let mut has_percentage = false;
@@ -3169,19 +3496,66 @@ fn assert_valid_allocations(env: &Env, beneficiaries: &Vec<Beneficiary>, will_ba
         }
     }
 
-    if fixed_total > will_balance {
+    if fixed_total > primary_balance {
         panic_with_error!(env, WillError::FixedAmountExceedsBalance);
     }
     if has_percentage && percentage_total != 10_000 {
         panic_with_error!(env, WillError::InvalidPercentages);
     }
     // A FixedAmount-only list is deliberately allowed to leave a portion of
-    // `will_balance` unaccounted for (fixed_total < will_balance): that
+    // `primary_balance` unaccounted for (fixed_total < primary_balance): that
     // headroom is exactly what a later `add_hashed_beneficiary` call
-    // reserves for a not-yet-disclosed beneficiary (#181/#186). It is never
-    // silently orphaned -- `distribute()` only pays out fixed_total's worth
-    // to visible beneficiaries and withholds the rest for hashed claims (or,
-    // if no hashed beneficiary is ever added, it simply stays unclaimed).
+    // reserves for a not-yet-disclosed beneficiary (#181/#186). If no hashed
+    // beneficiary is ever added, `distribute()` still returns whatever the
+    // fixed amounts did not claim to the owner instead of stranding it in
+    // the contract (#383). Any secondary token's whole balance is likewise
+    // refunded, since fixed amounts are denominated in the primary token
+    // only (#384).
+}
+
+/// Byte length of a SHA-256 digest, i.e. of a `HashedBeneficiary` commitment.
+///
+/// A commitment of any other length cannot be the output of
+/// `env.crypto().sha256`, so no pre-image could ever match it and the reserved
+/// share would be stuck forever (#371).
+const SHA256_DIGEST_LEN: u32 = 32;
+
+/// Validates a candidate hashed-beneficiary slot against the slots already on
+/// the will, before it is appended by [`WillContract::add_hashed_beneficiary`].
+///
+/// Enforces the three rules that keep every reserved share claimable (#371):
+/// the commitment is exactly [`SHA256_DIGEST_LEN`] bytes, it is not already
+/// present on the will, and the percentage is non-zero. This mirrors what
+/// [`assert_valid_allocations`] does for visible beneficiaries — reject zero
+/// percentages and duplicate addresses — extended to the commitment instead of
+/// an address.
+///
+/// The percentage *total* is checked separately by
+/// [`assert_valid_percentages`], which needs the visible beneficiaries too and
+/// runs once the new slot is on the will.
+fn assert_valid_hashed_beneficiary(
+    env: &Env,
+    existing: &Vec<HashedBeneficiary>,
+    commitment: &Bytes,
+    percentage: u32,
+) {
+    if commitment.len() != SHA256_DIGEST_LEN {
+        panic_with_error!(env, WillError::InvalidCommitmentLength);
+    }
+    // `reveal_and_claim` stops at the first matching slot and then reports
+    // `AlreadyClaimed`, so a second slot with the same commitment could never
+    // be reached by anyone.
+    for hb in existing.iter() {
+        if hb.commitment == *commitment {
+            panic_with_error!(env, WillError::DuplicateCommitment);
+        }
+    }
+    // A zero percentage reserves nothing yet still occupies a slot, and
+    // `unclaimed_hashed_bps` counts it in the denominator of every other
+    // hashed beneficiary's share — so it silently dilutes them.
+    if percentage == 0 {
+        panic_with_error!(env, WillError::InvalidPercentages);
+    }
 }
 
 /// Rescales every `Allocation::Percentage` entry in `beneficiaries` so they
@@ -3276,17 +3650,14 @@ fn total_checked_add(total: &mut u32, value: u32, env: &Env) {
     };
 }
 
-/// Sums every token balance in `balances` into a single `i128`, saturating
-/// rather than overflowing. Used to validate `Allocation::FixedAmount`
-/// entries against "the will's balance" in the simplified single-balance
-/// sense described in the `Allocation` docs: a fixed amount is available
-/// against the combined value locked across all of a will's tokens.
-fn total_balance(balances: &Map<Address, i128>) -> i128 {
-    let mut total: i128 = 0;
-    for (_, amount) in balances.iter() {
-        total = total.saturating_add(amount);
-    }
-    total
+/// Returns `balances`' entry for `primary_token`, or 0 when the will holds
+/// none of it. This — not [`total_balance`] — is the value
+/// `Allocation::FixedAmount` entries are denominated in and validated
+/// against: a fixed amount is a claim on the will's primary token, and
+/// adding up units of unrelated tokens (with unrelated decimals) would let a
+/// will be approved that `distribute` cannot pay out in full (#384).
+fn primary_token_balance(balances: &Map<Address, i128>, primary_token: &Address) -> i128 {
+    balances.get(primary_token.clone()).unwrap_or(0)
 }
 
 /// Asserts a guardian list is no longer than [`MAX_GUARDIANS`] and contains no
@@ -3329,41 +3700,6 @@ fn assert_valid_periods(env: &Env, checkin_period_days: u64, grace_period_days: 
     }
 }
 
-/// Distributes all token balances across `will.beneficiaries` proportionally
-/// to their basis-point shares, transfers the shares out of the contract,
-/// clears the balances map, marks the will `Released`, and publishes the
-/// `InheritanceReleased` event.
-///
-/// # Rounding Behavior
-///
-/// Each token's distribution is calculated as: `share = balance * (basis_points / 10_000)`.
-/// Integer division truncates toward zero, which may result in zero shares for
-/// beneficiaries with very small calculated amounts. For example, distributing 9 units
-/// equally among 10 beneficiaries (900 basis points each) gives each person 0.9 units,
-/// which truncates to 0.
-///
-/// To ensure no dust is left behind, any rounding remainder is paid to the final
-/// beneficiary in the list. This guarantees the full balance of every token is
-/// always distributed across beneficiaries.
-///
-/// **Note:** Callers should ensure that the will's balance is sufficient to give
-/// each beneficiary at least 1 unit of their share. Extremely small balances relative
-/// to beneficiary counts can result in most recipients getting zero after rounding.
-/// Consider validating a minimum will amount at creation time (see issue #37).
-/// Splits `will.balance` across `will.beneficiaries` proportionally to their
-/// percentages, transfers the shares out of the contract, marks the will
-/// `Released`, and publishes the `InheritanceReleased` event with a full
-/// For each token in `will.balances`, splits the balance across
-/// `will.beneficiaries` proportionally to their basis-point shares, transfers
-/// the shares out of the contract, clears the balances map, marks the will
-/// `Released`, and publishes the `InheritanceReleased` event. Any rounding
-/// remainder from integer division is paid to the final beneficiary so the
-/// full balance of every token is always distributed with no dust left behind.
-///
-/// Follows checks-effects-interactions ordering: all per-beneficiary share
-/// amounts are computed from the pre-mutation balances, then all state is
-/// committed (status, balances, indexes), and only then are the external
-/// token transfers executed.
 /// Calculates `floor(total * basis_points / 10_000)` without ever forming
 /// the potentially overflowing `total * basis_points` intermediate. The
 /// workspace release profile enables overflow checks, but this decomposition
@@ -3376,6 +3712,58 @@ pub(crate) fn proportional_share(total: i128, basis_points: u32) -> i128 {
     whole * basis_points as i128 + remainder * basis_points as i128 / BASIS_POINTS_TOTAL
 }
 
+/// Pays out every token balance the will holds, marks the will `Released`,
+/// and publishes the `InheritanceReleased` event.
+///
+/// For each token in `will.balances` the balance is split as follows:
+///
+/// 1. The keeper bounty (`will.keeper_bounty_bps`), taken out of the first
+///    token with a non-zero balance, when a non-owner keeper released the
+///    will (#297).
+/// 2. The reserve for hashed beneficiaries that have not yet called
+///    `reveal_and_claim` (#181/#186). It is withheld from the visible
+///    beneficiaries and left in `will.balances` for later claiming.
+/// 3. `Allocation::FixedAmount` beneficiaries, which are denominated in the
+///    will's *primary* token (`will.token`) only — a `FixedAmount(100)`
+///    beneficiary on a two-token will receives 100 units of the primary
+///    token in total, not 100 units of every token it holds (#384). Every
+///    other token's whole balance is therefore available to step 4.
+/// 4. `Allocation::Percentage` beneficiaries, which split whatever remains of
+///    each token by basis point. The last percentage beneficiary absorbs the
+///    integer-division remainder, so no dust is left behind (#190).
+///
+/// # Rounding
+///
+/// Each token's distribution is calculated as
+/// `share = balance * (basis_points / 10_000)`. Integer division truncates
+/// toward zero, which may result in zero shares for beneficiaries with very
+/// small calculated amounts: distributing 9 units equally among 10
+/// beneficiaries (900 bp each) gives each 0.9 units, which truncates to 0.
+/// The remainder is paid to the final percentage beneficiary, which
+/// guarantees the full balance of every token is always distributed.
+///
+/// **Note:** Callers should ensure that the will's balance is sufficient to
+/// give each beneficiary at least 1 unit of their share. Extremely small
+/// balances relative to beneficiary counts can result in most recipients
+/// getting zero after rounding. Consider validating a minimum will amount at
+/// creation time (see issue #37).
+///
+/// # Leftover value
+///
+/// If a will has **no** percentage beneficiaries (a `FixedAmount`-only will,
+/// which `assert_valid_allocations` deliberately allows to be
+/// under-allocated) the value left over after the fixed amounts have been
+/// paid has no beneficiary left to receive it. Rather than leaving those
+/// tokens stranded in the contract with no accounting and no withdrawal path
+/// once the will is `Released`, the remainder of every token is refunded to
+/// the will's owner and reported via [`events::leftover_refunded`] (#383).
+/// The refund is a no-op for wills that do have percentage beneficiaries,
+/// since the last one already absorbs the whole remainder.
+///
+/// Follows checks-effects-interactions ordering: all per-beneficiary share
+/// amounts (and the owner refund) are computed from the pre-mutation
+/// balances, then all state is committed (status, balances, indexes), and
+/// only then are the external token transfers executed.
 fn distribute(env: &Env, will: &mut Will, keeper: &Option<Address>) {
     let contract_address = env.current_contract_address();
     let count = will.beneficiaries.len();
@@ -3392,6 +3780,21 @@ fn distribute(env: &Env, will: &mut Will, keeper: &Option<Address>) {
     // Build a Vec of (token_addr, Vec<(beneficiary_addr, share)>) so we can
     // commit all state before any external call fires.
     let mut transfer_plan: Vec<(Address, Vec<(Address, i128)>)> = Vec::new(env);
+
+    // Per-token amounts refunded to the owner because no beneficiary was left
+    // to receive them (#383). See the "Leftover value" section of this
+    // function's docs.
+    let mut refund_plan: Vec<(Address, i128)> = Vec::new(env);
+
+    // Counted once up front rather than re-scanned per token: the count is the
+    // same for every token, and the percentage loop below needs it to know
+    // which beneficiary absorbs the rounding remainder.
+    let mut percentage_count: u32 = 0;
+    for beneficiary in will.beneficiaries.iter() {
+        if let Allocation::Percentage(_) = beneficiary.allocation {
+            percentage_count += 1;
+        }
+    }
 
     // Any beneficiary added via `add_hashed_beneficiary` who has not yet
     // called `reveal_and_claim` has a standing claim on this fraction of
@@ -3421,27 +3824,29 @@ fn distribute(env: &Env, will: &mut Will, keeper: &Option<Address>) {
 
         let mut shares: Vec<(Address, i128)> = Vec::new(env);
 
-        // Fixed-amount beneficiaries are paid first, capped at what is
-        // actually available so a misconfigured/under-funded token never
-        // aborts the whole distribution.
+        // Fixed amounts are denominated in the will's primary token only
+        // (#384): a `FixedAmount(100)` on a two-token will is 100 units of
+        // `will.token` in total, not 100 units of every token the will holds.
+        // Any other token's whole balance is available to the percentage
+        // split below.
+        //
+        // The amounts are capped at what is actually available so a
+        // misconfigured/under-funded will never aborts the whole
+        // distribution.
         let mut remaining = available;
-        for beneficiary in will.beneficiaries.iter() {
-            if let Allocation::FixedAmount(amt) = beneficiary.allocation {
-                let share = amt.min(remaining).max(0);
-                remaining -= share;
-                shares.push_back((beneficiary.address.clone(), share));
+        if token_addr == will.token {
+            for beneficiary in will.beneficiaries.iter() {
+                if let Allocation::FixedAmount(amt) = beneficiary.allocation {
+                    let share = amt.min(remaining).max(0);
+                    remaining -= share;
+                    shares.push_back((beneficiary.address.clone(), share));
+                }
             }
         }
 
         // Whatever remains is split among percentage-based beneficiaries,
         // proportionally to their basis points; the final one absorbs the
         // rounding remainder so no dust is left behind.
-        let mut percentage_count: u32 = 0;
-        for beneficiary in will.beneficiaries.iter() {
-            if let Allocation::Percentage(_) = beneficiary.allocation {
-                percentage_count += 1;
-            }
-        }
         let mut percentage_index: u32 = 0;
         let mut percentage_remaining = remaining;
         for beneficiary in will.beneficiaries.iter() {
@@ -3456,6 +3861,14 @@ fn distribute(env: &Env, will: &mut Will, keeper: &Option<Address>) {
                 };
                 shares.push_back((beneficiary.address.clone(), share));
             }
+        }
+
+        // With no percentage beneficiaries there is nobody left to absorb what
+        // the fixed amounts did not claim. Refunding it to the owner keeps the
+        // tokens from being stranded in the contract with no accounting and no
+        // withdrawal path once the will is `Released` (#383).
+        if percentage_count == 0 && remaining > 0 {
+            refund_plan.push_back((token_addr.clone(), remaining));
         }
 
         transfer_plan.push_back((token_addr, shares));
@@ -3482,6 +3895,13 @@ fn distribute(env: &Env, will: &mut Will, keeper: &Option<Address>) {
     storage::save_will(env, will);
 
     // --- INTERACTIONS: external token transfers execute after state is settled ---
+    for (token_addr, amount) in refund_plan.iter() {
+        if amount > 0 {
+            token::Client::new(env, &token_addr).transfer(&contract_address, &will.owner, &amount);
+            events::leftover_refunded(env, will.id, &token_addr, &will.owner, amount);
+        }
+    }
+
     for (token_addr, shares) in transfer_plan.iter() {
         let token_client = token::Client::new(env, &token_addr);
         for (beneficiary_addr, share) in shares.iter() {
@@ -3503,60 +3923,77 @@ fn distribute(env: &Env, will: &mut Will, keeper: &Option<Address>) {
     events::inheritance_released(env, will.id, token_count, count);
 }
 
+/// Combines two `Allocation`s recorded for the same beneficiary across two
+/// source wills into the single allocation the merged will carries.
+///
+/// Two fixed amounts are summed; a fixed amount always wins over a percentage
+/// (the beneficiary was promised an exact sum, which a percentage split
+/// cannot express); and two percentages collapse to `existing`, whose basis
+/// points are only advisory here — `merge_beneficiaries` recomputes them from
+/// the merged shares anyway.
+fn merge_allocation(existing: &Allocation, incoming: &Allocation) -> Allocation {
+    match (existing, incoming) {
+        (Allocation::FixedAmount(amt_a), Allocation::FixedAmount(amt_b)) => {
+            Allocation::FixedAmount(amt_a.saturating_add(*amt_b))
+        }
+        (Allocation::FixedAmount(amt), _) => Allocation::FixedAmount(*amt),
+        (_, Allocation::FixedAmount(amt)) => Allocation::FixedAmount(*amt),
+        (Allocation::Percentage(_), Allocation::Percentage(_)) => existing.clone(),
+    }
+}
+
 /// Merges beneficiaries from two wills, recalculating percentages proportionally
 /// based on the combined balance. If a beneficiary appears in both wills, their
 /// percentages are summed before recalculation. Preserves `FixedAmount` allocation
 /// types where applicable.
+///
+/// Shares are weighed by each will's **combined value across every token it
+/// holds** ([`total_balance`]), not by the legacy primary-token mirror
+/// `Will::balance`, so tokens other than the primary one are no longer ignored
+/// when the merged percentages are derived (#382). Share arithmetic goes
+/// through [`proportional_share`], which never forms the overflowing
+/// `balance * basis_points` intermediate.
 fn merge_beneficiaries(env: &Env, will_a: &Will, will_b: &Will) -> Vec<Beneficiary> {
-    let total_balance = will_a.balance + will_b.balance;
+    let value_a = total_balance(&will_a.balances);
+    let value_b = total_balance(&will_b.balances);
+    let total_value = value_a.saturating_add(value_b);
     let mut beneficiary_shares: Vec<(Address, i128)> = Vec::new(env);
     let mut beneficiary_allocations: Vec<(Address, Allocation)> = Vec::new(env);
 
-    for (beneficiaries, will_balance) in [
-        (&will_a.beneficiaries, will_a.balance),
-        (&will_b.beneficiaries, will_b.balance),
+    for (beneficiaries, will_value) in [
+        (&will_a.beneficiaries, value_a),
+        (&will_b.beneficiaries, value_b),
     ] {
         for beneficiary in beneficiaries.iter() {
             let share = match beneficiary.allocation {
-                Allocation::Percentage(bp) => will_balance * (bp as i128) / 10_000,
+                Allocation::Percentage(bp) => proportional_share(will_value, bp),
                 Allocation::FixedAmount(amt) => amt,
             };
-            let _allocation = beneficiary.allocation.clone();
+            // Accumulate in place: find this beneficiary's existing entry and
+            // add to it, rather than rebuilding both accumulator Vecs from
+            // scratch on every iteration (which allocated a fresh Vec per
+            // beneficiary and left a dead `_allocation` clone behind, #382).
             let mut found = false;
-            let mut updated_shares: Vec<(Address, i128)> = Vec::new(env);
-            let mut updated_allocations: Vec<(Address, Allocation)> = Vec::new(env);
-            for (addr, existing_share) in beneficiary_shares.iter() {
+            for i in 0..beneficiary_shares.len() {
+                let (addr, existing_share) = beneficiary_shares.get(i).unwrap();
                 if addr == beneficiary.address {
-                    updated_shares.push_back((addr, existing_share + share));
+                    let merged = existing_share.saturating_add(share);
+                    // Track original allocation type: prefer FixedAmount if
+                    // either will has it.
+                    let existing_alloc = beneficiary_allocations.get(i).unwrap().1;
+                    beneficiary_shares.set(i, (addr.clone(), merged));
+                    beneficiary_allocations.set(
+                        i,
+                        (
+                            addr,
+                            merge_allocation(&existing_alloc, &beneficiary.allocation),
+                        ),
+                    );
                     found = true;
-                } else {
-                    updated_shares.push_back((addr, existing_share));
+                    break;
                 }
             }
-            // Track original allocation type: prefer FixedAmount if either will has it
-            for (addr, existing_alloc) in beneficiary_allocations.iter() {
-                if addr == beneficiary.address {
-                    // If either the existing or new allocation is FixedAmount, preserve it
-                    let merged_alloc =
-                        match (existing_alloc.clone(), beneficiary.allocation.clone()) {
-                            (Allocation::FixedAmount(amt_a), Allocation::FixedAmount(amt_b)) => {
-                                Allocation::FixedAmount(amt_a + amt_b)
-                            }
-                            (Allocation::FixedAmount(amt), _) => Allocation::FixedAmount(amt),
-                            (_, Allocation::FixedAmount(amt)) => Allocation::FixedAmount(amt),
-                            (Allocation::Percentage(_), Allocation::Percentage(_)) => {
-                                existing_alloc.clone()
-                            }
-                        };
-                    updated_allocations.push_back((addr, merged_alloc));
-                } else {
-                    updated_allocations.push_back((addr, existing_alloc.clone()));
-                }
-            }
-            if found {
-                beneficiary_shares = updated_shares;
-                beneficiary_allocations = updated_allocations;
-            } else {
+            if !found {
                 beneficiary_shares.push_back((beneficiary.address.clone(), share));
                 beneficiary_allocations
                     .push_back((beneficiary.address.clone(), beneficiary.allocation.clone()));
@@ -3572,18 +4009,23 @@ fn merge_beneficiaries(env: &Env, will_a: &Will, will_b: &Will) -> Vec<Beneficia
     let count = beneficiary_shares.len();
 
     for (i, (addr, share)) in beneficiary_shares.iter().enumerate() {
-        // Find the original allocation type for this beneficiary
+        // `beneficiary_allocations` is maintained in lockstep with
+        // `beneficiary_shares` (same address, same index), so the original
+        // allocation type is a direct index lookup rather than a linear scan
+        // per beneficiary.
         let original_allocation = beneficiary_allocations
-            .iter()
-            .find(|(a, _)| *a == addr)
+            .get(i as u32)
             .map(|(_, alloc)| alloc);
 
         let allocation = match original_allocation {
             Some(Allocation::FixedAmount(amt)) => Allocation::FixedAmount(amt),
             _ => {
-                // Convert to percentage for non-fixed-amount beneficiaries
-                let bp = if total_balance > 0 {
-                    ((share * 10_000) / total_balance) as u32
+                // Convert to percentage for non-fixed-amount beneficiaries.
+                // Widened to u128 so the `share * 10_000` intermediate can
+                // never overflow, mirroring `proportional_share`'s guarantee
+                // in the other direction (#382).
+                let bp = if total_value > 0 {
+                    ((share as u128 * 10_000u128) / total_value as u128) as u32
                 } else {
                     0
                 };

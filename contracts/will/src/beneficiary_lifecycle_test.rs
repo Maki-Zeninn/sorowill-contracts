@@ -16,7 +16,9 @@ use soroban_sdk::{
     vec, Address, Env,
 };
 
-use crate::fuzz_harness::{assert_beneficiaries_are_indexed, assert_removed_beneficiaries_are_unindexed};
+use crate::fuzz_harness::{
+    assert_beneficiaries_are_indexed, assert_removed_beneficiaries_are_unindexed,
+};
 use crate::{Allocation, Beneficiary, WillContract, WillContractClient, WillStatus};
 
 const DAY: u64 = 86_400;

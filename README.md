@@ -25,7 +25,7 @@ SoroWill is a trustless, on-chain inheritance protocol for Stellar Soroban. It l
 5. **Release.** If the grace period expires without an emergency check-in, anyone can call `release_inheritance`, which distributes the locked balance to every beneficiary proportionally, in one transaction.
 6. **Cancel anytime.** While the will is active, the owner can call `cancel_will` to withdraw the full balance.
 7. **Update beneficiaries.** While active, the owner can call `update_beneficiaries` to change who inherits and in what proportions.
-8. **Guardian override.** A will can name up to 3 guardians. Any 2 of them calling `guardian_trigger` force an immediate release — useful if the owner is known to be incapacitated rather than simply inactive. See [docs/adr/0001-guardian-threshold.md](./docs/adr/0001-guardian-threshold.md) for the rationale behind the 2-of-3 default, its known limitations, and how it relates to the proposed configurable M-of-N guardian feature.
+8. **Guardian override.** A will can name up to 3 guardians. Once the will's guardian threshold is reached (2 by default, configurable per will), their `guardian_trigger` calls force an immediate release — useful if the owner is known to be incapacitated rather than simply inactive. See [docs/adr/0001-guardian-threshold.md](./docs/adr/0001-guardian-threshold.md) for the rationale behind the 2-of-3 default, its known limitations, and how it relates to the proposed configurable M-of-N guardian feature.
 
 ## Tech Stack
 
@@ -42,8 +42,8 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 # Add the Soroban wasm target
 rustup target add wasm32v1-none
 
-# Install the Stellar CLI
-cargo install --locked stellar-cli --features opt
+# Install the Stellar CLI (>= 22.0.0)
+cargo install --locked stellar-cli
 
 # Clone and test
 git clone https://github.com/SoroWill/sorowill-contracts.git
@@ -107,11 +107,11 @@ The following limits are defined as `pub const` in `lib.rs` and re-exported from
 | Constant | Value | Meaning |
 |---|---|---|
 | `MAX_BENEFICIARIES` | `10` | Maximum number of beneficiaries per will |
-| `MAX_GUARDIANS` | `3` | Maximum number of guardians per will |
-| `GUARDIAN_THRESHOLD` | `2` | Default number of guardian votes required to force an early release |
+| `MAX_GUARDIANS` | `3` | Maximum number of guardians per will (private to the crate, not exported) |
+| `GUARDIAN_THRESHOLD` | `2` | Default number of guardian votes required to force an early release (private to the crate, not exported) |
 
 ```rust
-use will::{MAX_BENEFICIARIES, MAX_GUARDIANS, GUARDIAN_THRESHOLD};
+use will::MAX_BENEFICIARIES;
 ```
 
 ## Contract Functions
@@ -131,6 +131,8 @@ use will::{MAX_BENEFICIARIES, MAX_GUARDIANS, GUARDIAN_THRESHOLD};
 | `get_time_until_deadline` | Seconds until the will's next relevant deadline (check-in or grace period); negative if past due, `None` if not applicable to the current status | `will_id` | `Option<i64>` |
 | `get_wills_by_owner` | Lists every will owned by an address | `owner` | `Vec<Will>` |
 | `get_wills_by_beneficiary` | Lists every will an address is named in | `beneficiary` | `Vec<Will>` |
+| `get_will_history` | Reads a will's on-chain audit trail (capped at the newest `MAX_HISTORY_ENTRIES` transitions) | `will_id` | `Vec<WillStatusTransition>` |
+| `get_will_history_page` | Reads a bounded, cursor-paged slice of a will's audit trail | `will_id`, `cursor`, `limit` | `Vec<WillStatusTransition>` |
 | `guardian_trigger` | Casts a guardian vote; 2 of 3 forces an early release | `will_id`, `guardian` | — |
 
 `checkin_period_days` and `grace_period_days` passed to `create_will` must each be at least `1` day (and at most `MAX_PERIOD_DAYS`); a value of `0` panics with `WillError::InvalidPeriod`.
@@ -199,6 +201,24 @@ was explicitly archived) from one that never existed. This is documented on
 probe. See [issue #166](https://github.com/SoroWill/sorowill-contracts/issues/166)
 for the full context.
 
+### What `archive_will` removes
+
+`archive_will` is permissionless: once a will is `Released` or `Cancelled`, any
+account may call it to reclaim storage. Beyond the will entry and the
+owner/beneficiary/Triggered indexes, it also drops the will's on-chain
+`WillHistory` entry and every `GuardianVote` / `GuardianCancelVote` entry
+belonging to its guardians.
+
+**History does not survive archival.** Those keys are only ever read to describe
+a *live* will, so retaining them would strand ledger state — paid for out of the
+protocol's rent — for entries no query can resolve. Consumers that need the
+audit trail after a will is archived must use the **off-chain event log**,
+which is append-only and never trimmed; the archived `Will` itself keeps the
+final status, balances, and parties until Soroban's state archival collects it.
+In particular, `get_will_history` returns an empty trail for an archived will
+and must not be used as a post-archival recovery path. See
+[issue #393](https://github.com/SoroWill/sorowill-contracts/issues/393).
+
 ## Error codes
 
 Every failure mode is a `#[contracterror]` variant of `WillError`
@@ -216,7 +236,7 @@ disambiguate.
 | 3 | `WillNotActive` | The requested action requires the will to be `Active`. |
 | 4 | `WillNotTriggered` | The requested action requires the will to be `Triggered`. |
 | 5 | `GracePeriodNotExpired` | `release_inheritance` was called before the grace period elapsed. |
-| 6 | `GracePeriodExpired` | `emergency_checkin` was called after the grace period already elapsed. |
+| 6 | `GracePeriodExpired` | `emergency_checkin` (or `guardian_cancel_trigger`) was called after the grace period already elapsed. A `Triggered` will can no longer be returned to `Active` once the grace period is over. |
 | 7 | `InvalidPercentages` | Beneficiary percentages did not sum to exactly 10,000 basis points. |
 | 8 | `AlreadyVoted` | The guardian has already voted to trigger this will. |
 | 9 | `NotGuardian` | The caller is not a designated guardian of this will. |
@@ -245,9 +265,12 @@ disambiguate.
 | 32 | `TooManyIds` | `get_wills` was called with more ids than `MAX_GET_WILLS_IDS`. |
 | 33 | `InsufficientBalance` | `split_will` was asked to move more of a token than the will currently holds of it. |
 | 34 | `InvalidSplit` | `split_will` was called with an empty beneficiary-to-split list, or a split that would leave the source or new will with an invalid state. |
-| 35 | `InvalidPreimage` | `reveal_and_claim` was called with a pre-image that does not match any stored `HashedBeneficiary` commitment on the will. |
+| 35 | `InvalidPreimage` | `reveal_and_claim` was called with a 64-byte pre-image whose SHA-256 does not match any stored `HashedBeneficiary` commitment on the will. |
 | 36 | `AlreadyClaimed` | `reveal_and_claim` was called for a hashed beneficiary slot that has already been claimed. |
 | 37 | `TooManyWills` | An owner or beneficiary index list is already at `MAX_WILLS_PER_INDEX` and cannot accept another will id. |
+| 38 | `GuardianNotConsented` | A guardian has not accepted their role and cannot vote. |
+| 39 | `PrimaryTokenMismatch` | Cannot merge: the two wills' primary tokens differ. |
+| 40 | `InvalidTokenCount` | The token list supplied to `create_will`, `clone_will`, `split_will`, or `batch_create_wills` was empty, or contained more than `MAX_TOKENS` entries. |
 
 ## Contract spec artifact
 

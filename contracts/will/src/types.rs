@@ -4,12 +4,24 @@ use soroban_sdk::{contracttype, Address, Bytes, Map, Symbol, Vec};
 ///
 /// - `Percentage(bp)` is a share expressed in basis points (1 bp = 0.01 %) of
 ///   whatever balance remains *after* every `FixedAmount` beneficiary on the
-///   same will has been paid. All `Percentage` shares on a will must sum to
-///   exactly 10,000 (100 % of the remainder).
+///   same will has been paid, applied to **every** token the will holds. All
+///   `Percentage` shares on a will must sum to exactly 10,000 (100 % of the
+///   remainder).
 /// - `FixedAmount(amount)` entitles the beneficiary to exactly `amount` of
-///   the will's token, paid before any percentage-based split is computed.
-///   The sum of all `FixedAmount` entries on a will can never exceed the
-///   will's balance (enforced by `assert_valid_allocations`).
+///   the will's **primary token** ([`Will::token`], the first entry of the
+///   `tokens` list passed to `create_will`), paid before any percentage-based
+///   split is computed. The sum of all `FixedAmount` entries on a will can
+///   never exceed that token's balance (enforced by
+///   `assert_valid_allocations`).
+///
+/// # Fixed amounts and multi-token wills
+///
+/// A `FixedAmount` is a claim on one specific token, not on "the will's
+/// value". A will holding two tokens and a `FixedAmount(100)` beneficiary
+/// pays that beneficiary 100 units of the primary token **in total** — the
+/// secondary token's balance is not drawn on to satisfy it, and is instead
+/// split among the percentage beneficiaries or, if there are none, refunded
+/// to the owner at release time (issue #384, #383).
 ///
 /// A single will may mix both kinds: e.g. one beneficiary with a fixed
 /// amount and the rest splitting the remainder by percentage.

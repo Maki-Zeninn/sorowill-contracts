@@ -292,7 +292,12 @@ pub fn beneficiary_renounced(
 /// [`guardians_updated`] so that off-chain consumers subscribed to the dedicated
 /// `"guardup"` topic receive the notification consistently, regardless of which
 /// entry point (`update_guardians` or `update_will_settings`) made the change.
-pub fn will_settings_updated(env: &Env, will_id: u64, owner: &Address, update_fields: &Vec<Symbol>) {
+pub fn will_settings_updated(
+    env: &Env,
+    will_id: u64,
+    owner: &Address,
+    update_fields: &Vec<Symbol>,
+) {
     env.events().publish(
         (symbol_short!("setupd"), will_id),
         (owner.clone(), update_fields.clone()),
@@ -303,6 +308,22 @@ pub fn will_settings_updated(env: &Env, will_id: u64, owner: &Address, update_fi
 pub fn keeper_bounty_paid(env: &Env, will_id: u64, keeper: &Address, amount: i128) {
     env.events()
         .publish((symbol_short!("bounty"), will_id), (keeper.clone(), amount));
+}
+
+/// Published when part of a released will's balance had no beneficiary left to
+/// receive it and was refunded to the owner instead (issue #383).
+///
+/// This only happens on a `FixedAmount`-only will (no `Allocation::Percentage`
+/// beneficiaries), which `assert_valid_allocations` deliberately allows to be
+/// under-allocated: the fixed amounts are paid out of the primary token and
+/// whatever is left over — including the whole balance of any secondary token,
+/// since fixed amounts are denominated in the primary token only — is returned
+/// to the owner rather than left stranded in the contract.
+pub fn leftover_refunded(env: &Env, will_id: u64, token: &Address, owner: &Address, amount: i128) {
+    env.events().publish(
+        (symbol_short!("lftback"), will_id),
+        (token.clone(), owner.clone(), amount),
+    );
 }
 
 /// Published when a will is split into two independent wills (issue #45).
@@ -330,7 +351,13 @@ pub fn hashed_claimed(env: &Env, will_id: u64, claimant: &Address, amount: i128)
 /// Published when the owner adds a hashed beneficiary commitment to a will
 /// (issue #185). Without this, off-chain indexers reconstructing will state
 /// purely from events would silently miss every hashed beneficiary.
-pub fn hashed_beneficiary_added(env: &Env, will_id: u64, owner: &Address, commitment: &Bytes, percentage: u32) {
+pub fn hashed_beneficiary_added(
+    env: &Env,
+    will_id: u64,
+    owner: &Address,
+    commitment: &Bytes,
+    percentage: u32,
+) {
     env.events().publish(
         (symbol_short!("hadd"), will_id),
         (owner.clone(), commitment.clone(), percentage),

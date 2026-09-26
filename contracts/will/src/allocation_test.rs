@@ -106,7 +106,17 @@ fn pure_percentage_regression() {
     ];
     let tokens: SorobanVec<(Address, i128)> = vec![&env, (token_address.clone(), 1_000_000_i128)];
 
-    let will_id = client.create_will(&owner, &tokens, &beneficiaries, &90, &7, &vec![&env], &2, &None, &0);
+    let will_id = client.create_will(
+        &owner,
+        &tokens,
+        &beneficiaries,
+        &90,
+        &7,
+        &vec![&env],
+        &2,
+        &None,
+        &0,
+    );
     assert_will_invariants(&client, &token, &token_address, will_id);
     release(&env, &client, will_id);
 
@@ -138,11 +148,26 @@ fn pure_fixed_amount() {
     ];
     let tokens: SorobanVec<(Address, i128)> = vec![&env, (token_address.clone(), 1_000_000_i128)];
 
-    let will_id = client.create_will(&owner, &tokens, &beneficiaries, &90, &7, &vec![&env], &2, &None, &0);
+    let will_id = client.create_will(
+        &owner,
+        &tokens,
+        &beneficiaries,
+        &90,
+        &7,
+        &vec![&env],
+        &2,
+        &None,
+        &0,
+    );
     // Pure-fixed-amount wills have no percentage-typed beneficiaries, so
     // assert_percentage_shares_sum_to_10000 is a no-op here; custody and
     // index consistency still apply.
-    assert_custody_matches_recorded_balance(&token, &client.address, &token_address, &client.get_will(&will_id));
+    assert_custody_matches_recorded_balance(
+        &token,
+        &client.address,
+        &token_address,
+        &client.get_will(&will_id),
+    );
     assert_beneficiaries_are_indexed(&client, &client.get_will(&will_id));
     release(&env, &client, will_id);
 
@@ -178,7 +203,17 @@ fn mixed_fixed_and_percentage() {
     ];
     let tokens: SorobanVec<(Address, i128)> = vec![&env, (token_address.clone(), 1_000_000_i128)];
 
-    let will_id = client.create_will(&owner, &tokens, &beneficiaries, &90, &7, &vec![&env], &2, &None, &0);
+    let will_id = client.create_will(
+        &owner,
+        &tokens,
+        &beneficiaries,
+        &90,
+        &7,
+        &vec![&env],
+        &2,
+        &None,
+        &0,
+    );
     assert_will_invariants(&client, &token, &token_address, will_id);
     release(&env, &client, will_id);
 
@@ -349,7 +384,17 @@ fn three_way_percentage_split_with_remainder() {
     ];
     let tokens: SorobanVec<(Address, i128)> = vec![&env, (token_address.clone(), 1_000_000_i128)];
 
-    let will_id = client.create_will(&owner, &tokens, &beneficiaries, &90, &7, &vec![&env], &2, &None, &0);
+    let will_id = client.create_will(
+        &owner,
+        &tokens,
+        &beneficiaries,
+        &90,
+        &7,
+        &vec![&env],
+        &2,
+        &None,
+        &0,
+    );
     assert_will_invariants(&client, &token, &token_address, will_id);
     release(&env, &client, will_id);
 
