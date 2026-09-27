@@ -21,6 +21,28 @@ use crate::{
     CURRENT_SCHEMA_VERSION,
 };
 
+/// #367: the crate-root `CURRENT_SCHEMA_VERSION` is a plain re-export of
+/// `storage::CURRENT_SCHEMA_VERSION`, so there is exactly one definition and
+/// the entry points can never drift from the storage layer. This assertion
+/// fails to *compile* if a second, separate constant is reintroduced at the
+/// crate root — which is what the old "must match storage::CURRENT_SCHEMA_VERSION"
+/// comment asked maintainers to remember by hand.
+const _: () = assert!(CURRENT_SCHEMA_VERSION == storage::CURRENT_SCHEMA_VERSION);
+
+/// A will created by this contract version is stamped with the single source
+/// of truth, which is why `migrate_will` is a no-op for every will the
+/// contract can actually produce.
+#[test]
+fn a_fresh_will_is_stamped_with_the_storage_schema_version() {
+    let (env, contract_id, _owner, will_id) = setup();
+    let client = WillContractClient::new(&env, &contract_id);
+
+    assert_eq!(
+        client.get_will(&will_id).schema_version,
+        storage::CURRENT_SCHEMA_VERSION
+    );
+}
+
 fn setup() -> (Env, Address, Address, u64) {
     let env = Env::default();
     env.mock_all_auths();

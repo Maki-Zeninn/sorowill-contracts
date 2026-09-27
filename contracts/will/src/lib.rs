@@ -290,7 +290,10 @@ use soroban_sdk::{
 };
 
 pub use errors::WillError;
+// Re-exported so the schema version has one definition (`storage`) and one
+// import path (`crate::CURRENT_SCHEMA_VERSION`) for entry points and tests.
 pub use storage::GuardianVoteRecord;
+pub use storage::CURRENT_SCHEMA_VERSION;
 pub use types::{
     Allocation, Beneficiary, Guardian, GuardianConsent, GuardianSpec, GuardianVoteReason,
     HashedBeneficiary, ProtocolStats, Will, WillStatus, WillStatusTransition,
@@ -412,9 +415,6 @@ soroban_sdk::contractmeta!(
 
 #[contract]
 pub struct WillContract;
-
-/// Current contract schema version. Must match storage::CURRENT_SCHEMA_VERSION.
-const CURRENT_SCHEMA_VERSION: u32 = 1;
 
 #[contractimpl]
 impl WillContract {
@@ -2818,7 +2818,8 @@ impl WillContract {
     /// users to opt-in to new contract versions without being forced to do so.
     ///
     /// # Current behavior is a placeholder
-    /// `CURRENT_SCHEMA_VERSION` is `1`, and every will created by this
+    /// [`CURRENT_SCHEMA_VERSION`] (defined in [`storage`] and re-exported at
+    /// the crate root) is `1`, and every will created by this
     /// contract version is already stamped with `schema_version:
     /// CURRENT_SCHEMA_VERSION` at creation time (see [`create_will`] and
     /// [`batch_create_wills`]). Because of that, `old_version >=
@@ -2830,8 +2831,10 @@ impl WillContract {
     /// future schema bump will hang real field transformations off of; a
     /// will could only reach this function with `old_version <
     /// CURRENT_SCHEMA_VERSION` after a future contract upgrade raises
-    /// `CURRENT_SCHEMA_VERSION` and defines an actual v1 → v2 (or later)
-    /// transformation here.
+    /// [`storage::CURRENT_SCHEMA_VERSION`] and defines an actual v1 → v2
+    /// (or later) transformation here. Because that constant is the single
+    /// source of truth, the entry point and the storage layer can never
+    /// disagree about the current version.
     ///
     /// # Panics
     /// - [`WillError::NotOwner`] if `owner` does not own `will_id`.
