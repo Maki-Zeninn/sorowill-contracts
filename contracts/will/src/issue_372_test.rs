@@ -262,8 +262,8 @@ fn triggered_index_is_unaffected_by_recounting() {
     let client = WillContractClient::new(&env, &contract_id);
 
     trigger(&env, &client, will_id);
-    assert_eq!(client.get_triggered_wills(), vec![&env, will_id]);
+    assert_eq!(client.get_triggered_wills(&None, &50), vec![&env, will_id]);
 
     client.guardian_cancel_trigger(&will_id, &guardian_a);
-    assert_eq!(client.get_triggered_wills(), vec![&env, will_id]);
+    assert_eq!(client.get_triggered_wills(&None, &50), vec![&env, will_id]);
 }

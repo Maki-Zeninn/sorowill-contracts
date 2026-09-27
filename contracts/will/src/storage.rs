@@ -435,6 +435,35 @@ pub fn get_beneficiary_wills(env: &Env, beneficiary: &Address) -> Vec<u64> {
 }
 
 /// Adds `will_id` to the global index of Triggered wills, if not already present.
+///
+/// ## Why this index is bounded
+///
+/// Unlike the per-address `OwnerWills` / `BeneficiaryWills` indexes, this one
+/// is shared by the whole protocol, so a hard [`MAX_WILLS_PER_INDEX`] cap
+/// would be actively harmful here: any single address triggering a will could
+/// push the *global* index to the cap and make `trigger_will` fail for
+/// everyone (#368). The size is instead kept down by construction:
+///
+/// 1. **Entries only exist while a will is `Triggered`.** Every path that
+///    moves a will out of `Triggered` — `emergency_checkin`,
+///    `guardian_cancel_trigger`, `release_inheritance`, `guardian_trigger`,
+///    `cancel_will`, and `archive_will` — calls [`unindex_triggered_will`]
+///    first, so the index tracks the live trigger set rather than a
+///    cumulative history.
+/// 2. **Wills are removed from it on every other terminal transition too**
+///    (see `storage::archive_will`), so a will that is settled and archived
+///    leaves nothing behind.
+/// 3. **A will is indexed at most once per trigger cycle**, and a cycle ends
+///    with the will leaving `Triggered`, so the index cannot accumulate
+///    duplicates or repeats.
+///
+/// In the steady state the index therefore holds one id per will that is
+/// concurrently inside its grace period, which is bounded by how many wills
+/// are live at once rather than by total history.
+///
+/// Reads are still bounded per call: [`get_triggered_wills_page`] pages the
+/// vector with [`paginate_ids`] so a keeper bot never has to deserialise the
+/// whole index. That is why no cap is applied on the write path.
 pub fn index_triggered_will(env: &Env, will_id: u64) {
     let key = DataKey::TriggeredWills;
     let mut ids: Vec<u64> = env
@@ -480,12 +509,34 @@ pub fn unindex_triggered_will(env: &Env, will_id: u64) {
 }
 
 /// Returns the full list of will ids currently in `Triggered` status.
+///
+/// Internal-only helper: it deserialises the entire index. The public
+/// entry point is [`get_triggered_wills_page`], which bounds the read.
 pub fn get_triggered_wills(env: &Env) -> Vec<u64> {
     let key = DataKey::TriggeredWills;
     env.storage()
         .persistent()
         .get(&key)
         .unwrap_or_else(|| Vec::new(env))
+}
+
+/// Returns one page of the `Triggered` index, for `get_triggered_wills`.
+///
+/// Delegates to [`paginate_ids`], so `cursor` is an exclusive will id (pass
+/// `None` or `0` for the first page) and `limit` is capped at
+/// [`MAX_PAGE_SIZE`]. Callers page until a returned page is shorter than the
+/// limit, or empty, to know they have seen the whole index.
+///
+/// This relies on the same **ORDERING INVARIANT** as every other paginated
+/// index: the vector must stay monotonically ascending, and
+/// [`unindex_triggered_will`] must keep using order-preserving removal (it
+/// does — `remove_unchecked`, not swap-with-last), so removing a triggered id
+/// in the middle never causes a later id to be skipped or repeated across
+/// pages. Ids are appended in allocation order and never rewritten, so the
+/// vector is ascending by construction.
+pub fn get_triggered_wills_page(env: &Env, cursor: Option<u64>, limit: u32) -> Vec<u64> {
+    let ids = get_triggered_wills(env);
+    paginate_ids(env, &ids, cursor, limit)
 }
 
 /// Returns the full vote record for `guardian` in the current trigger cycle
