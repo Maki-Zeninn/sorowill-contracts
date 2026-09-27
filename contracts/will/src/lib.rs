@@ -2211,14 +2211,30 @@ impl WillContract {
     /// # Panics
     /// - [`WillError::WillNotFound`] if the will does not exist.
     /// - [`WillError::NotGuardian`] if `guardian` is not named on this will.
+    /// - [`WillError::WillNotActive`] if the will is in a terminal status
+    ///   (`Released`, `Cancelled` or `Settled`).
+    /// - [`WillError::InvalidConsentTransition`] if the guardian already
+    ///   `Rejected` their role, which is irrevocable.
     pub fn accept_guardian_role(env: Env, will_id: u64, guardian: Address) {
         guardian.require_auth();
         let mut will = load_will(&env, will_id);
+        assert_consent_changeable(&env, &will);
 
         let mut found = false;
         let mut updated_guardians: Vec<Guardian> = Vec::new(&env);
         for g in will.guardians.iter() {
             if g.address == guardian {
+                // `Rejected` is terminal: a guardian who declined must be
+                // re-appointed through `update_guardians` (which resets the
+                // list to `Pending`) rather than flipping consent back (#374).
+                if g.consent == GuardianConsent::Rejected {
+                    panic_with_error!(&env, WillError::InvalidConsentTransition);
+                }
+                // Already accepted: nothing to write, so skip the storage
+                // update entirely rather than rewriting an identical entry.
+                if g.consent == GuardianConsent::Accepted {
+                    return;
+                }
                 updated_guardians.push_back(Guardian {
                     address: g.address.clone(),
                     weight: g.weight,
@@ -2241,24 +2257,52 @@ impl WillContract {
     /// Allows a named guardian to reject their role on a will.
     ///
     /// A guardian can reject their role to prevent themselves from voting via
-    /// [`guardian_trigger`]. Once rejected, the guardian cannot vote unless
-    /// explicitly re-added to the guardian list.
+    /// [`guardian_trigger`]. Once rejected, the guardian cannot vote and
+    /// [`accept_guardian_role`] can no longer undo it: `Rejected` is terminal
+    /// for that guardian entry. The only way back to `Pending` is the owner
+    /// re-appointing them through `update_guardians` / `update_guardians_weighted`.
+    ///
+    /// # Consent state machine
+    ///
+    /// | from \ to | `Pending` | `Accepted` | `Rejected` |
+    /// |-----------|-----------|------------|------------|
+    /// | `Pending`  | — | `Accepted` | `Rejected` |
+    /// | `Accepted` | — | no-op     | `Rejected` |
+    /// | `Rejected` | — | `InvalidConsentTransition` | no-op |
+    ///
+    /// `Rejected` is terminal: a guardian who declined is not asked again, so
+    /// silently flipping them back to `Accepted` would resurrect a decision
+    /// they already made.
     ///
     /// # Parameters
     /// - `will_id`: the will to reject guardianship for
     /// - `guardian`: the guardian address rejecting the role; must authorize
     ///
+    /// If the guardian already cast a trigger or cancel vote in the current
+    /// cycle, that vote is withdrawn: the stored vote record is removed and
+    /// its weight is deducted from `guardian_vote_weight` /
+    /// `guardian_cancel_vote_weight` so a withdrawn guardian can no longer
+    /// contribute toward quorum (#374).
+    ///
     /// # Panics
     /// - [`WillError::WillNotFound`] if the will does not exist.
     /// - [`WillError::NotGuardian`] if `guardian` is not named on this will.
+    /// - [`WillError::WillNotActive`] if the will is in a terminal status
+    ///   (`Released`, `Cancelled` or `Settled`).
     pub fn reject_guardian_role(env: Env, will_id: u64, guardian: Address) {
         guardian.require_auth();
         let mut will = load_will(&env, will_id);
+        assert_consent_changeable(&env, &will);
 
+        let now = env.ledger().timestamp();
         let mut found = false;
         let mut updated_guardians: Vec<Guardian> = Vec::new(&env);
         for g in will.guardians.iter() {
             if g.address == guardian {
+                if g.consent == GuardianConsent::Rejected {
+                    // Already rejected: nothing to change, so skip the write.
+                    return;
+                }
                 updated_guardians.push_back(Guardian {
                     address: g.address.clone(),
                     weight: g.weight,
@@ -2272,6 +2316,22 @@ impl WillContract {
 
         if !found {
             panic_with_error!(&env, WillError::NotGuardian);
+        }
+
+        // Withdraw any vote the guardian had already cast in this cycle, so a
+        // rejected guardian stops contributing weight toward quorum (#374).
+        let weight = g_weight(&will, &guardian);
+        if storage::has_guardian_voted(&env, will_id, &guardian, now, will.grace_period_days) {
+            storage::clear_guardian_vote(&env, will_id, &guardian);
+            will.guardian_vote_weight = will.guardian_vote_weight.saturating_sub(weight);
+            will.guardian_votes = will.guardian_votes.saturating_sub(1);
+        }
+        if storage::has_guardian_cancel_voted(&env, will_id, &guardian, now, will.grace_period_days)
+        {
+            storage::clear_guardian_cancel_vote(&env, will_id, &guardian);
+            will.guardian_cancel_vote_weight =
+                will.guardian_cancel_vote_weight.saturating_sub(weight);
+            will.guardian_cancel_votes = will.guardian_cancel_votes.saturating_sub(1);
         }
 
         will.guardians = updated_guardians;
@@ -3405,25 +3465,29 @@ fn assert_status(env: &Env, will: &Will, expected: WillStatus, err: WillError) {
     }
 }
 
-/// Copies `guardians` into a new list with every consent reset to
-/// [`GuardianConsent::Pending`], preserving addresses and vote weights.
+/// Asserts a will is not in a terminal status, panicking with
+/// [`WillError::WillNotActive`] otherwise.
 ///
-/// A brand-new will has to re-ask its guardians for consent: a guardian who
-/// accepted (or rejected) the role on the source will was never asked about the
-/// new one, and carrying the old value over would let them vote — or silently
-/// inherit a decline they never made — on a will they never agreed to (#375).
-/// `create_will`, `batch_create_wills` and `update_guardians*` all start
-/// guardians at `Pending` for the same reason.
-fn reset_guardian_consent(env: &Env, guardians: &Vec<Guardian>) -> Vec<Guardian> {
-    let mut pending: Vec<Guardian> = Vec::new(env);
-    for g in guardians.iter() {
-        pending.push_back(Guardian {
-            address: g.address.clone(),
-            weight: g.weight,
-            consent: GuardianConsent::Pending,
-        });
+/// `Released`, `Cancelled` and `Settled` wills are final: their guardian
+/// rosters can no longer change, so `accept_guardian_role` /
+/// `reject_guardian_role` must refuse them rather than pay for a storage write
+/// on an entry nothing can act on any more (#374).
+fn assert_consent_changeable(env: &Env, will: &Will) {
+    match will.status {
+        WillStatus::Released | WillStatus::Cancelled | WillStatus::Settled => {
+            panic_with_error!(env, WillError::WillNotActive)
+        }
+        WillStatus::PendingConfirmation | WillStatus::Active | WillStatus::Triggered => {}
     }
-    pending
+}
+
+/// Returns `guardian`'s vote weight on `will` (0 if it is not a guardian).
+fn g_weight(will: &Will, guardian: &Address) -> u32 {
+    will.guardians
+        .iter()
+        .find(|g| &g.address == guardian)
+        .map(|g| g.weight)
+        .unwrap_or(0)
 }
 
 /// Asserts `caller` authorized this call and is either the will's owner or
