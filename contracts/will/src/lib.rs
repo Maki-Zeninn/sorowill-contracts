@@ -186,6 +186,8 @@ mod issue_guardian_vote_underflow_test;
 #[cfg(test)]
 mod issue_368_test;
 #[cfg(test)]
+mod issue_369_test;
+#[cfg(test)]
 mod issue_372_test;
 
 // The following test modules exist as files but were never wired into this
@@ -282,7 +284,8 @@ mod update_will_settings_test;
 mod wills_by_owner_status_test;
 
 use soroban_sdk::{
-    contract, contractimpl, panic_with_error, symbol_short, token, Address, Bytes, Env, Map, Vec,
+    contract, contractimpl, panic_with_error, symbol_short, token, xdr::ToXdr, Address, Bytes, Env,
+    Map, Vec,
 };
 
 pub use errors::WillError;
@@ -302,9 +305,10 @@ pub use types::{
 /// so that SDKs and apps can detect version mismatches at runtime via
 /// [`WillContract::get_contract_version`].
 ///
-/// Current value: **1.1.0** → `1_001_000`. 1.1.0 made `get_triggered_wills`
-/// take a `(cursor, limit)` page instead of returning the whole index (#368).
-pub const CONTRACT_VERSION: u32 = 1_001_000;
+/// Current value: **1.2.0** → `1_002_000`. 1.1.0 made `get_triggered_wills`
+/// take a `(cursor, limit)` page instead of returning the whole index (#368);
+/// 1.2.0 bound `reveal_and_claim` to the address in the pre-image (#369).
+pub const CONTRACT_VERSION: u32 = 1_002_000;
 
 /// Number of seconds in a day, used to convert the day-denominated periods
 /// stored on a `Will` into absolute ledger timestamps.
@@ -335,17 +339,33 @@ const MAX_PERIOD_DAYS: u64 = 3_650;
 /// Maximum number of distinct tokens a single will may hold.
 const MAX_TOKENS: u32 = 10;
 
-/// Exact byte length of a hashed beneficiary's pre-image: 32 raw address bytes
-/// followed by a 32-byte salt chosen by the beneficiary at registration time.
+/// Exact byte length of a hashed beneficiary's pre-image: a 32-byte address
+/// fingerprint followed by a 32-byte salt chosen by the beneficiary at
+/// registration time.
 ///
-/// `reveal_and_claim` enforces this length *before* hashing and rejects anything
-/// else with [`WillError::InvalidPreimageLength`], rather than letting a
-/// wrong-length input fall through to a generic
-/// [`WillError::InvalidPreimage`] after a wasted SHA-256 (#370). Fixed here
-/// because a commitment is a SHA-256 digest, so an owner who registers a
-/// commitment over a different-length pre-image can never produce a matching
-/// reveal.
+/// Layout: `sha256(xdr(beneficiary_address))[0..32] || salt(32)`. See
+/// `reveal_and_claim`'s "Pre-image layout" section for the full description of
+/// the fingerprint and why it is used in place of the address bytes (#369).
+///
+/// `reveal_and_claim` enforces this length *before* hashing and rejects
+/// anything else with [`WillError::InvalidPreimageLength`], rather than letting
+/// a wrong-length input fall through to a generic
+/// [`WillError::InvalidPreimage`] after a wasted SHA-256 (#370). It then
+/// requires the fingerprint half to match `claimant`
+/// ([`WillError::PreimageAddressMismatch`], #369) — the pre-image is public
+/// once broadcast, so without that binding anyone who observed it could replay
+/// it with their own address and take the share. Fixed here because a
+/// commitment is a SHA-256 digest, so an owner who registers a commitment over
+/// a different-length pre-image can never produce a matching reveal.
 pub const PREIMAGE_LENGTH: u32 = 64;
+
+/// Byte length of the address half of a pre-image: the first 32 bytes. The
+/// remainder of the [`PREIMAGE_LENGTH`]-byte pre-image is the salt.
+///
+/// A Soroban address does not serialise to 32 bytes, so this half holds a
+/// 32-byte fingerprint of the address rather than the address itself. See
+/// `reveal_and_claim`'s "Pre-image layout" section.
+pub const PREIMAGE_ADDRESS_LENGTH: u32 = 32;
 
 /// Number of distinct guardian votes required to force an early release.
 ///
@@ -389,7 +409,7 @@ soroban_sdk::contractmeta!(
 );
 // Kept in sync with CONTRACT_VERSION's semver-decoded form by
 // issue_272_test.rs; bump both together.
-soroban_sdk::contractmeta!(key = "Version", val = "1.1.0");
+soroban_sdk::contractmeta!(key = "Version", val = "1.2.0");
 soroban_sdk::contractmeta!(
     key = "Homepage",
     val = "https://github.com/SoroWill/sorowill-contracts"
@@ -3269,11 +3289,48 @@ impl WillContract {
     /// Verifies a pre-image against a stored commitment hash and, if correct,
     /// immediately transfers that beneficiary's share to the revealed address.
     ///
-    /// The pre-image must be exactly [`PREIMAGE_LENGTH`] bytes: the first 32
-    /// bytes are the raw bytes of the beneficiary `Address` and the remaining
-    /// 32 bytes are a random salt chosen by the beneficiary at registration
-    /// time. This length is checked before hashing; anything else is rejected
-    /// with [`WillError::InvalidPreimageLength`] (#370).
+    /// ## Pre-image layout
+    ///
+    /// The pre-image is exactly [`PREIMAGE_LENGTH`] bytes:
+    ///
+    /// ```text
+    /// bytes  0..32  address fingerprint of the beneficiary (see below)
+    /// bytes 32..64  a random 32-byte salt chosen by the beneficiary
+    /// ```
+    ///
+    /// The **address fingerprint** is
+    /// `sha256(xdr(beneficiary_address))[0..32]` — the first
+    /// [`PREIMAGE_ADDRESS_LENGTH`] bytes of the SHA-256 digest of the
+    /// beneficiary address's XDR encoding. `reveal_and_claim` recomputes it
+    /// from `claimant` and requires the two to be equal (#369).
+    ///
+    /// Earlier documentation described these first 32 bytes as "the raw bytes
+    /// of the beneficiary `Address`". That was never implementable as written:
+    /// a Soroban address does not serialise to 32 bytes (`Address::to_xdr`
+    /// yields a tagged XDR encoding — 36 bytes for a contract account — and a
+    /// different length for an account or muxed account), so no conforming
+    /// pre-image could ever be decoded back into an address. A fixed 32-byte
+    /// fingerprint of the address is the same length the pre-image layout has
+    /// always reserved, is computable by the beneficiary at registration
+    /// time, and is not invertible: to replay someone else's pre-image an
+    /// attacker would have to find an address whose SHA-256 digest collides
+    /// with theirs.
+    ///
+    /// The total length is checked first; anything else is rejected with
+    /// [`WillError::InvalidPreimageLength`] (#370).
+    ///
+    /// ## Why the address half is bound to `claimant`
+    ///
+    /// A pre-image is not a secret once it is used: it appears verbatim in
+    /// the transaction arguments, in simulation results, and in the mempool
+    /// while the claim is pending. Before #369 the contract only checked that
+    /// `sha256(preimage)` matched a stored commitment, and then paid
+    /// whichever `claimant` the caller supplied. Any third party who observed
+    /// the pre-image — a keeper bot, a block explorer, a mempool watcher —
+    /// could replay it with their *own* address and take the reserved share
+    /// before the real beneficiary ever got a transaction confirmed. Requiring
+    /// `decode(preimage[0..32]) == claimant` makes the reveal useless to
+    /// anyone but the address it commits to.
     ///
     /// This entrypoint works once the will is `Released`: `distribute()`
     /// withholds every unclaimed hashed beneficiary's combined percentage
@@ -3285,7 +3342,8 @@ impl WillContract {
     ///
     /// # Parameters
     /// - `will_id`: the will to claim from.
-    /// - `claimant`: the address that will receive the funds; must authorise.
+    /// - `claimant`: the address that will receive the funds. Must authorise,
+    ///   and must be the address encoded in the first 32 bytes of `preimage`.
     /// - `preimage`: raw bytes of exactly [`PREIMAGE_LENGTH`] bytes whose
     ///   SHA-256 must match a stored commitment.
     ///
@@ -3295,6 +3353,10 @@ impl WillContract {
     ///   [`PREIMAGE_LENGTH`] bytes. Checked before hashing, so the empty, short
     ///   or over-long pre-image fails with this error rather than the generic
     ///   [`WillError::InvalidPreimage`] (#370).
+    /// - [`WillError::PreimageAddressMismatch`] if the first 32 bytes of
+    ///   `preimage` are not a valid `Address`, or decode to an address other
+    ///   than `claimant` (#369). Checked before hashing, so a stolen pre-image
+    ///   is rejected without ever reaching the commitment lookup.
     /// - [`WillError::InvalidPreimage`] if a correctly-sized pre-image matches no
     ///   stored commitment.
     /// - [`WillError::AlreadyClaimed`] if that slot was already claimed.
@@ -3319,6 +3381,22 @@ impl WillContract {
         // and keeps the failure distinguishable from a genuine mismatch.
         if preimage.len() != PREIMAGE_LENGTH {
             panic_with_error!(&env, WillError::InvalidPreimageLength);
+        }
+
+        // Bind the pre-image to `claimant` before it is ever used (#369).
+        //
+        // The pre-image is public as soon as it is broadcast, so matching the
+        // commitment alone would let any third party who saw it replay it
+        // with their own `claimant` and take the reserved share. Requiring the
+        // pre-image's address half to be the fingerprint of `claimant` makes
+        // the reveal worthless to anyone but the address it commits to.
+        //
+        // This runs *before* the commitment hash so a stolen pre-image is
+        // rejected without paying for a SHA-256 over attacker-controlled
+        // bytes, and so the failure is reported as a clear binding error
+        // rather than as a confusing generic mismatch.
+        if !preimage_is_bound_to(&env, &claimant, &preimage) {
+            panic_with_error!(&env, WillError::PreimageAddressMismatch);
         }
 
         // Hash the supplied pre-image with SHA-256.
@@ -3640,6 +3718,30 @@ fn assert_valid_percentages(
     if total > 10_000 {
         panic_with_error!(env, WillError::InvalidPercentages);
     }
+}
+
+/// Returns the [`PREIMAGE_ADDRESS_LENGTH`]-byte address fingerprint that a
+/// hashed beneficiary's pre-image must carry.
+///
+/// It is `sha256(xdr(address))[0..32]`: the first
+/// [`PREIMAGE_ADDRESS_LENGTH`] bytes of the SHA-256 digest of the address's
+/// XDR encoding. See `reveal_and_claim`'s "Pre-image layout" section for why a
+/// fingerprint is used rather than the address bytes themselves (#369).
+fn preimage_address_binding(env: &Env, address: &Address) -> Bytes {
+    let digest = env.crypto().sha256(&address.clone().to_xdr(env));
+    Bytes::from_array(env, &digest.to_array())
+}
+
+/// Returns whether `preimage`'s address half is the fingerprint of `address`.
+///
+/// The comparison is length-safe: the caller has already checked that
+/// `preimage` is exactly [`PREIMAGE_LENGTH`] bytes, so both halves are
+/// [`PREIMAGE_ADDRESS_LENGTH`] bytes long and a mismatch is a genuine
+/// difference rather than a short read. Constant-time comparison is not
+/// required here — both values are public, derived from data the caller
+/// already supplied.
+fn preimage_is_bound_to(env: &Env, address: &Address, preimage: &Bytes) -> bool {
+    preimage.slice(0..PREIMAGE_ADDRESS_LENGTH) == preimage_address_binding(env, address)
 }
 
 /// Sums the `percentage` of every hashed beneficiary that has not yet

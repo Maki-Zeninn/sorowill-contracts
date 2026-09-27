@@ -122,4 +122,12 @@ pub enum WillError {
     /// registered on this will. `reveal_and_claim` always matches the first
     /// matching slot, so a duplicate would leave the second unclaimable.
     DuplicateCommitment = 45,
+    /// `reveal_and_claim` was called with a pre-image whose first 32 bytes are
+    /// not a valid Soroban address, or that decode to an address other than
+    /// `claimant`. The pre-image is public (it sits in the transaction
+    /// arguments, in simulation results, and in the mempool), so without this
+    /// binding any third party who observes it could replay it with their own
+    /// address as `claimant` and take the reserved share before the real
+    /// beneficiary does (#369).
+    PreimageAddressMismatch = 46,
 }

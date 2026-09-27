@@ -276,6 +276,7 @@ disambiguate.
 | 43 | `InvalidPreimageLength` | `reveal_and_claim` was called with a pre-image that is not exactly 64 bytes, so it can never be a well-formed `address || salt` reveal. |
 | 44 | `InvalidCommitmentLength` | `add_hashed_beneficiary` was called with a commitment that is not exactly 32 bytes, so no pre-image can ever match it. |
 | 45 | `DuplicateCommitment` | `add_hashed_beneficiary` was called with a commitment already registered on this will. |
+| 46 | `PreimageAddressMismatch` | `reveal_and_claim` was called with a 64-byte pre-image whose first 32 bytes are not the address fingerprint of `claimant`. A pre-image is public once broadcast, so without this binding anyone who observed it could replay it with their own address and take the reserved share. |
 
 ## Contract spec artifact
 

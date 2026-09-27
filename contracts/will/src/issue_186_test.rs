@@ -10,10 +10,12 @@
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
     token::{Client as TokenClient, StellarAssetClient},
-    vec, Address, Bytes, Env, Vec as SorobanVec,
+    vec,
+    xdr::ToXdr,
+    Address, Bytes, Env, Vec as SorobanVec,
 };
 
-use crate::{Allocation, Beneficiary, WillContract, WillContractClient};
+use crate::{Allocation, Beneficiary, WillContract, WillContractClient, PREIMAGE_LENGTH};
 
 const DAY: u64 = 86_400;
 
@@ -83,8 +85,15 @@ fn hashed_beneficiary_percentage_basis_points_payout() {
         &0,
     );
 
-    // Create hashed beneficiary commitment
-    let preimage_bytes = [0u8; 64];
+    // Create hashed beneficiary commitment. The pre-image layout is
+    // `sha256(xdr(address)) || salt` (see `PREIMAGE_ADDRESS_LENGTH`), and
+    // `reveal_and_claim` requires the address half to be the fingerprint of the
+    // claimant (#369), so it has to be derived from `secret_address` rather
+    // than arbitrary bytes.
+    let mut preimage_bytes = [0xA5u8; PREIMAGE_LENGTH as usize]; // salt fills the tail
+    let secret_address_digest = env.crypto().sha256(&secret_address.clone().to_xdr(&env));
+    preimage_bytes[..32].copy_from_slice(&secret_address_digest.to_array());
+
     let preimage = Bytes::from_array(&env, &preimage_bytes);
     let commitment = env.crypto().sha256(&preimage);
     let commitment_bytes = Bytes::from_array(&env, &commitment.to_array());
