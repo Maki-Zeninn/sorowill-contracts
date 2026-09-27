@@ -271,11 +271,11 @@ mod issue_422_test;
 // removed contract functionality, which is out of scope for a merge-damage
 // cleanup — left disconnected until someone decides what to do with it.
 #[cfg(test)]
+mod uncovered_entrypoints_test;
+#[cfg(test)]
 mod update_will_settings_test;
 #[cfg(test)]
 mod wills_by_owner_status_test;
-#[cfg(test)]
-mod uncovered_entrypoints_test;
 
 use soroban_sdk::{
     contract, contractimpl, panic_with_error, symbol_short, token, Address, Bytes, Env, Map, Vec,
@@ -2214,14 +2214,30 @@ impl WillContract {
     /// # Panics
     /// - [`WillError::WillNotFound`] if the will does not exist.
     /// - [`WillError::NotGuardian`] if `guardian` is not named on this will.
+    /// - [`WillError::WillNotActive`] if the will is in a terminal status
+    ///   (`Released`, `Cancelled` or `Settled`).
+    /// - [`WillError::InvalidConsentTransition`] if the guardian already
+    ///   `Rejected` their role, which is irrevocable.
     pub fn accept_guardian_role(env: Env, will_id: u64, guardian: Address) {
         guardian.require_auth();
         let mut will = load_will(&env, will_id);
+        assert_consent_changeable(&env, &will);
 
         let mut found = false;
         let mut updated_guardians: Vec<Guardian> = Vec::new(&env);
         for g in will.guardians.iter() {
             if g.address == guardian {
+                // `Rejected` is terminal: a guardian who declined must be
+                // re-appointed through `update_guardians` (which resets the
+                // list to `Pending`) rather than flipping consent back (#374).
+                if g.consent == GuardianConsent::Rejected {
+                    panic_with_error!(&env, WillError::InvalidConsentTransition);
+                }
+                // Already accepted: nothing to write, so skip the storage
+                // update entirely rather than rewriting an identical entry.
+                if g.consent == GuardianConsent::Accepted {
+                    return;
+                }
                 updated_guardians.push_back(Guardian {
                     address: g.address.clone(),
                     weight: g.weight,
@@ -2246,28 +2262,52 @@ impl WillContract {
     /// Allows a named guardian to reject their role on a will.
     ///
     /// A guardian can reject their role to prevent themselves from voting via
-    /// [`guardian_trigger`]. Once rejected, the guardian cannot vote unless
-    /// explicitly re-added to the guardian list.
+    /// [`guardian_trigger`]. Once rejected, the guardian cannot vote and
+    /// [`accept_guardian_role`] can no longer undo it: `Rejected` is terminal
+    /// for that guardian entry. The only way back to `Pending` is the owner
+    /// re-appointing them through `update_guardians` / `update_guardians_weighted`.
+    ///
+    /// # Consent state machine
+    ///
+    /// | from \ to | `Pending` | `Accepted` | `Rejected` |
+    /// |-----------|-----------|------------|------------|
+    /// | `Pending`  | — | `Accepted` | `Rejected` |
+    /// | `Accepted` | — | no-op     | `Rejected` |
+    /// | `Rejected` | — | `InvalidConsentTransition` | no-op |
+    ///
+    /// `Rejected` is terminal: a guardian who declined is not asked again, so
+    /// silently flipping them back to `Accepted` would resurrect a decision
+    /// they already made.
     ///
     /// # Parameters
     /// - `will_id`: the will to reject guardianship for
     /// - `guardian`: the guardian address rejecting the role; must authorize
     ///
-    /// # Events
-    /// Emits [`events::guardian_rejected_role`] (topic `"greject"`) with the
-    /// rejecting guardian as the payload, after the consent change is saved.
+    /// If the guardian already cast a trigger or cancel vote in the current
+    /// cycle, that vote is withdrawn: the stored vote record is removed and
+    /// its weight is deducted from `guardian_vote_weight` /
+    /// `guardian_cancel_vote_weight` so a withdrawn guardian can no longer
+    /// contribute toward quorum (#374).
     ///
     /// # Panics
     /// - [`WillError::WillNotFound`] if the will does not exist.
     /// - [`WillError::NotGuardian`] if `guardian` is not named on this will.
+    /// - [`WillError::WillNotActive`] if the will is in a terminal status
+    ///   (`Released`, `Cancelled` or `Settled`).
     pub fn reject_guardian_role(env: Env, will_id: u64, guardian: Address) {
         guardian.require_auth();
         let mut will = load_will(&env, will_id);
+        assert_consent_changeable(&env, &will);
 
+        let now = env.ledger().timestamp();
         let mut found = false;
         let mut updated_guardians: Vec<Guardian> = Vec::new(&env);
         for g in will.guardians.iter() {
             if g.address == guardian {
+                if g.consent == GuardianConsent::Rejected {
+                    // Already rejected: nothing to change, so skip the write.
+                    return;
+                }
                 updated_guardians.push_back(Guardian {
                     address: g.address.clone(),
                     weight: g.weight,
@@ -2281,6 +2321,22 @@ impl WillContract {
 
         if !found {
             panic_with_error!(&env, WillError::NotGuardian);
+        }
+
+        // Withdraw any vote the guardian had already cast in this cycle, so a
+        // rejected guardian stops contributing weight toward quorum (#374).
+        let weight = g_weight(&will, &guardian);
+        if storage::has_guardian_voted(&env, will_id, &guardian, now, will.grace_period_days) {
+            storage::clear_guardian_vote(&env, will_id, &guardian);
+            will.guardian_vote_weight = will.guardian_vote_weight.saturating_sub(weight);
+            will.guardian_votes = will.guardian_votes.saturating_sub(1);
+        }
+        if storage::has_guardian_cancel_voted(&env, will_id, &guardian, now, will.grace_period_days)
+        {
+            storage::clear_guardian_cancel_vote(&env, will_id, &guardian);
+            will.guardian_cancel_vote_weight =
+                will.guardian_cancel_vote_weight.saturating_sub(weight);
+            will.guardian_cancel_votes = will.guardian_cancel_votes.saturating_sub(1);
         }
 
         will.guardians = updated_guardians;
@@ -2298,6 +2354,12 @@ impl WillContract {
     /// from the source will. The new will gets a fresh balance (funded by the
     /// `tokens` parameter), a new id, and starts with `Active` status and a
     /// fresh check-in deadline.
+    ///
+    /// The guardian list is copied with every consent reset to
+    /// [`GuardianConsent::Pending`] (addresses and vote weights are preserved),
+    /// exactly like [`create_will`]: a guardian must be asked about the clone
+    /// before they can vote on it, so consent recorded on the source will does
+    /// not carry over (#375).
     ///
     /// The source will must be `Active` or `Triggered`. Cloning is
     /// deliberately *not* allowed from a `Cancelled`, `Released`, or
@@ -2320,6 +2382,10 @@ impl WillContract {
     ///
     /// # Returns
     /// The newly allocated will id.
+    ///
+    /// The clone's audit trail is seeded with a `create` transition exactly like
+    /// [`create_will`], so `get_will_history` starts with the same entry
+    /// regardless of which creation path produced the will.
     ///
     /// # Panics
     /// - [`WillError::WillNotFound`] if the source will does not exist.
@@ -2410,7 +2476,7 @@ impl WillContract {
             trigger_time: None,
             confirmation_deadline: None,
             status: WillStatus::Active,
-            guardians: source.guardians.clone(),
+            guardians: reset_guardian_consent(&env, &source.guardians),
             guardian_vote_weight: 0,
             guardian_votes: 0,
             guardian_cancel_vote_weight: 0,
@@ -2424,6 +2490,18 @@ impl WillContract {
         storage::save_will(&env, &will);
         storage::index_by_owner(&env, &owner, will_id);
         storage::increment_active_will_count(&env);
+
+        // Seed the audit trail with the same `create` transition every other
+        // creation path records, so `get_will_history` starts with one entry
+        // regardless of how the will came into being (#376).
+        record_transition(
+            &env,
+            will_id,
+            WillStatus::Active,
+            WillStatus::Active,
+            &owner,
+            symbol_short!("create"),
+        );
 
         events::will_created(
             &env,
@@ -2970,11 +3048,22 @@ impl WillContract {
     /// it starts `Active` with the same check-in period, grace period,
     /// co-owners, and threshold as the original.
     ///
+    /// The child inherits the source's guardians and threshold, but every
+    /// guardian's consent is reset to [`GuardianConsent::Pending`] (addresses
+    /// and vote weights are preserved), exactly like [`create_will`]: a
+    /// guardian must be asked about the child will before they can vote on it,
+    /// so consent recorded on the source does not carry over (#375).
+    ///
     /// # Parameters
     /// - `will_id`: the source will to split from.
     /// - `owner`: must be the primary owner of the source will.
     /// - `beneficiaries_to_split`: subset of beneficiaries to move to the new will.
-    ///   Their percentages will be renormalised to sum to 100 in the child will.
+    ///   Every address must already be a beneficiary of the source will, must
+    ///   not be repeated, and the list may hold at most
+    ///   [`MAX_BENEFICIARIES`] entries. The `Allocation` on each entry is
+    ///   **ignored**: the child's allocation is the source will's entry for
+    ///   that address, renormalised to sum to 10,000 bps across the child list.
+    ///   The entry exists only to name the addresses to move.
     /// - `tokens`: `(token_address, amount)` pairs to move from the source
     ///   will's balances into the child will, mirroring `create_will`'s
     ///   multi-token API. Each `amount` must be > 0 and no greater than what
@@ -2986,6 +3075,11 @@ impl WillContract {
     /// # Returns
     /// The id of the newly created child will.
     ///
+    /// The child's audit trail is seeded with a `create` transition exactly like
+    /// [`create_will`], so `get_will_history` on the child starts with the
+    /// same entry regardless of which creation path produced it. The source
+    /// will's own history is untouched: a split is not a status change on it.
+    ///
     /// # Panics
     /// - [`WillError::NotOwner`] / [`WillError::WillNotActive`]
     /// - [`WillError::InvalidTokenCount`] if `tokens` is empty or exceeds
@@ -2993,6 +3087,10 @@ impl WillContract {
     /// - [`WillError::ZeroAmount`] if any token amount is not positive.
     /// - [`WillError::InsufficientBalance`] if a requested token amount
     ///   exceeds what the source will holds of that token.
+    /// - [`WillError::BeneficiaryNotFound`] if an address in
+    ///   `beneficiaries_to_split` is not a beneficiary of the source will.
+    /// - [`WillError::DuplicateBeneficiary`] if an address appears more than
+    ///   once in `beneficiaries_to_split`.
     /// - [`WillError::InvalidSplit`] if `beneficiaries_to_split` is empty or would
     ///   leave the source will with no beneficiaries.
     /// - [`WillError::FixedAmountExceedsBalance`] if either the remaining or
@@ -3034,14 +3132,43 @@ impl WillContract {
             }
         }
 
-        // Build a set of addresses being split out to verify they exist in the
-        // source will and remove them from it.
+        // Build the child's beneficiary list from the SOURCE will's entries.
+        //
+        // `beneficiaries_to_split` is a request to move addresses, not to
+        // invent them: the comment above this block used to claim it verified
+        // the addresses exist on the source, but it only filtered the source
+        // list, so any address and allocation the caller passed in became a
+        // beneficiary of the child even when it was never on the source (#377).
+        // The allocation used for the child is therefore the source entry's,
+        // not the caller's; percentages are renormalised afterwards.
+        if beneficiaries_to_split.len() > MAX_BENEFICIARIES {
+            panic_with_error!(&env, WillError::TooManyBeneficiaries);
+        }
+
+        // A repeated address would silently collapse in the filter below and
+        // leave the source and child disagreeing about how many beneficiaries
+        // moved, so reject it up front.
+        for (i, s) in beneficiaries_to_split.iter().enumerate() {
+            for other in beneficiaries_to_split.iter().skip(i + 1) {
+                if s.address == other.address {
+                    panic_with_error!(&env, WillError::DuplicateBeneficiary);
+                }
+            }
+            if !names_address(&source.beneficiaries, &s.address) {
+                panic_with_error!(&env, WillError::BeneficiaryNotFound);
+            }
+        }
+
         let mut remaining_beneficiaries: Vec<Beneficiary> = Vec::new(&env);
+        let mut source_split: Vec<Beneficiary> = Vec::new(&env);
         for b in source.beneficiaries.iter() {
             let mut being_split = false;
             for s in beneficiaries_to_split.iter() {
                 if s.address == b.address {
                     being_split = true;
+                    // Take the allocation from the source entry, not the
+                    // caller-supplied one.
+                    source_split.push_back(b.clone());
                     break;
                 }
             }
@@ -3058,7 +3185,7 @@ impl WillContract {
         // Renormalise each side's `Allocation::Percentage` entries so they sum
         // to 10,000 bps again; `FixedAmount` entries pass through unchanged.
         let normalised_remaining = renormalize_percentages(&env, &remaining_beneficiaries);
-        let normalised_split = renormalize_percentages(&env, &beneficiaries_to_split);
+        let normalised_split = renormalize_percentages(&env, &source_split);
 
         // Move every requested token amount out of the source's balances and
         // into the child's. `token`/`balance` mirror the primary (first)
@@ -3121,7 +3248,7 @@ impl WillContract {
             trigger_time: None,
             confirmation_deadline: None,
             status: WillStatus::Active,
-            guardians: source.guardians.clone(),
+            guardians: reset_guardian_consent(&env, &source.guardians),
             guardian_vote_weight: 0,
             guardian_votes: 0,
             guardian_cancel_vote_weight: 0,
@@ -3135,6 +3262,19 @@ impl WillContract {
         storage::save_will(&env, &child);
         storage::index_by_owner(&env, &source.owner, new_id);
         storage::increment_active_will_count(&env);
+
+        // Seed the child's audit trail with the same `create` transition
+        // `create_will` and `batch_create_wills` record, so `get_will_history`
+        // starts with one entry for the child too (#376). The source keeps its
+        // own history; the split is not a status change on the source.
+        record_transition(
+            &env,
+            new_id,
+            WillStatus::Active,
+            WillStatus::Active,
+            &owner,
+            symbol_short!("create"),
+        );
 
         events::will_split(&env, will_id, new_id, &owner, primary_amount);
         events::will_created(
@@ -3401,6 +3541,31 @@ fn assert_status(env: &Env, will: &Will, expected: WillStatus, err: WillError) {
     if will.status != expected {
         panic_with_error!(env, err);
     }
+}
+
+/// Asserts a will is not in a terminal status, panicking with
+/// [`WillError::WillNotActive`] otherwise.
+///
+/// `Released`, `Cancelled` and `Settled` wills are final: their guardian
+/// rosters can no longer change, so `accept_guardian_role` /
+/// `reject_guardian_role` must refuse them rather than pay for a storage write
+/// on an entry nothing can act on any more (#374).
+fn assert_consent_changeable(env: &Env, will: &Will) {
+    match will.status {
+        WillStatus::Released | WillStatus::Cancelled | WillStatus::Settled => {
+            panic_with_error!(env, WillError::WillNotActive)
+        }
+        WillStatus::PendingConfirmation | WillStatus::Active | WillStatus::Triggered => {}
+    }
+}
+
+/// Returns `guardian`'s vote weight on `will` (0 if it is not a guardian).
+fn g_weight(will: &Will, guardian: &Address) -> u32 {
+    will.guardians
+        .iter()
+        .find(|g| &g.address == guardian)
+        .map(|g| g.weight)
+        .unwrap_or(0)
 }
 
 /// Asserts `caller` authorized this call and is either the will's owner or
