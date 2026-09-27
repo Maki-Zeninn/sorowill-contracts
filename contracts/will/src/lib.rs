@@ -122,6 +122,8 @@ mod issue_183_test;
 #[cfg(test)]
 mod issue_354_test;
 #[cfg(test)]
+mod issue_355_test;
+#[cfg(test)]
 mod issue_356_test;
 #[cfg(test)]
 mod issue_357_test;
@@ -803,10 +805,26 @@ impl WillContract {
     /// Panics if any will ID is invalid, not owned by `owner`, or not `Active`.
     ///
     /// At most `batch_check_in_limit::MAX_BATCH_CHECK_IN` (50) IDs are accepted
-    /// per call; longer inputs panic with [`WillError::BatchTooLarge`].
+    /// per call; longer inputs panic with [`WillError::BatchTooLarge`]. Every ID
+    /// must also be distinct — a repeated ID panics with
+    /// [`WillError::DuplicateWillId`] rather than being processed once per
+    /// occurrence, which would otherwise rewrite the same will and emit a
+    /// redundant `check_in` event for each repeat (#355).
+    ///
+    /// # Panics
+    /// - [`WillError::BatchTooLarge`] if more than
+    ///   `batch_check_in_limit::MAX_BATCH_CHECK_IN` ids are supplied.
+    /// - [`WillError::DuplicateWillId`] if the same will id appears more than once.
+    /// - [`WillError::WillNotFound`] if any id names no will.
+    /// - [`WillError::NotOwner`] if any of those wills is not owned by `owner`.
+    /// - [`WillError::WillNotActive`] if any of those wills is not `Active`.
     pub fn batch_check_in(env: Env, will_ids: Vec<u64>, owner: Address) {
         owner.require_auth();
         batch_check_in_limit::assert_within_limit(&env, will_ids.len());
+        // Reject repeats before any storage write, so a batch can never be
+        // partially applied and the `batch_checkin` count always matches the
+        // number of distinct wills actually checked in (#355).
+        batch_check_in_limit::assert_no_duplicates(&env, &will_ids);
         let now = env.ledger().timestamp();
         let count = will_ids.len();
 

@@ -12,6 +12,10 @@ gets its own [contract spec artifact](./spec) once exported.
 
 ### Added
 
+- `WillError::DuplicateWillId` (code 45): `batch_check_in` now rejects a
+  `will_ids` list that names the same will twice, instead of processing the
+  repeat and emitting a redundant `check_in` event for it (#355). `README.md`
+  and `spec/will-v0.1.0.json` are updated for the new code.
 - `WillError::DuplicateToken` (code 40): `create_will` and `batch_create_wills`
   now reject a `tokens` list that names the same token address twice (#350).
 - `get_will_history` now records the `confirm_will` (`PendingConfirmation` to
