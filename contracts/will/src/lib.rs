@@ -120,6 +120,8 @@ mod distribute_overflow_safety_test;
 #[cfg(test)]
 mod issue_183_test;
 #[cfg(test)]
+mod issue_354_test;
+#[cfg(test)]
 mod issue_414_test;
 
 /// Regression test for issue #184: `merge_wills` refuses mismatched primary tokens.
@@ -854,10 +856,17 @@ impl WillContract {
     /// Cancels an in-progress trigger during the grace period, proving the
     /// owner is alive, and resets the check-in countdown.
     ///
+    /// The grace deadline second belongs to the owner: this call is valid while
+    /// `now <= trigger_time + grace_period_days * SECONDS_PER_DAY` and panics
+    /// with [`WillError::GracePeriodExpired`] strictly after it. The rule in
+    /// [`Self::release_inheritance`] is the exact complement of this one, so
+    /// precisely one of the two succeeds at every timestamp (#354).
+    ///
     /// # Panics
     /// - [`WillError::NotOwner`] if `owner` does not own `will_id`.
     /// - [`WillError::WillNotTriggered`] if the will is not `Triggered`.
-    /// - [`WillError::GracePeriodExpired`] if the grace period has already elapsed.
+    /// - [`WillError::GracePeriodExpired`] if the grace period has already
+    ///   elapsed, i.e. `now` is strictly greater than the grace deadline.
     pub fn emergency_checkin(env: Env, will_id: u64, owner: Address) {
         owner.require_auth();
         let mut will = load_owned(&env, will_id, &owner);
@@ -908,6 +917,15 @@ impl WillContract {
     /// their configured percentages. Callable by anyone once the grace
     /// period has fully elapsed.
     ///
+    /// The grace deadline second itself is **not** releasable: this call
+    /// requires `now` to be strictly greater than
+    /// `trigger_time + grace_period_days * SECONDS_PER_DAY` and panics with
+    /// [`WillError::GracePeriodNotExpired`] at or before it. The boundary second
+    /// therefore belongs to the owner's [`Self::emergency_checkin`], which
+    /// accepts `now <= deadline`. Exactly one of the two succeeds at any
+    /// timestamp, so the outcome no longer depends on which transaction the
+    /// ledger happens to order first (#354).
+    ///
     /// In push mode (the default), tokens are transferred directly to each
     /// beneficiary. In pull mode (`pull_distribution = true`), shares are
     /// stored in claimable-shares storage and beneficiaries must call
@@ -920,7 +938,8 @@ impl WillContract {
     ///
     /// # Panics
     /// - [`WillError::WillNotTriggered`] if the will is not `Triggered`.
-    /// - [`WillError::GracePeriodNotExpired`] if the grace period has not elapsed yet.
+    /// - [`WillError::GracePeriodNotExpired`] if `now` is at or before the grace
+    ///   deadline, i.e. the grace period has not strictly elapsed yet.
     ///
     /// # Examples
     ///
@@ -948,7 +967,13 @@ impl WillContract {
         let trigger_time = will.trigger_time.unwrap_or(0);
         let grace_deadline = trigger_time + will.grace_period_days * SECONDS_PER_DAY;
         let now = env.ledger().timestamp();
-        if now < grace_deadline {
+        // Strictly greater: the boundary second belongs to the owner's
+        // `emergency_checkin`, so exactly one of these two entry points is
+        // valid at any timestamp and the outcome cannot depend on transaction
+        // order within a ledger (#354). `emergency_checkin` and
+        // `guardian_cancel_trigger` enforce the same deadline from the other
+        // side, so all three agree on when the grace period is over.
+        if now <= grace_deadline {
             panic_with_error!(&env, WillError::GracePeriodNotExpired);
         }
 
@@ -1700,6 +1725,13 @@ impl WillContract {
     /// period has expired but has not yet been released) — callers should
     /// treat any non-positive value as "actionable now" rather than treating
     /// only `None` as the past-due signal.
+    ///
+    /// A `Triggered` will reporting exactly `0` is sitting on its grace
+    /// deadline second, which still belongs to the owner:
+    /// [`Self::emergency_checkin`] succeeds there and [`Self::release_inheritance`]
+    /// does not until the following second (#354). A non-positive value
+    /// therefore still means the owner should be alerted, not that the estate
+    /// is already releasable.
     ///
     /// Note: This function still loads the full `Will` struct from persistent
     /// storage and deserializes it. The dominant cost is the storage read and
