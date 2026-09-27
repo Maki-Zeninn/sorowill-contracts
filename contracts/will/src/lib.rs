@@ -617,7 +617,6 @@ impl WillContract {
         // map (rather than re-reading the first `tokens` entry) so `balance`
         // can never disagree with `balances[token]` (#350).
         let (primary_token, _) = tokens.get_unchecked(0);
-        let primary_balance = balances.get(primary_token.clone()).unwrap_or(0);
 
         let will = Will {
             id: will_id,
@@ -2635,7 +2634,6 @@ impl WillContract {
             }
 
             let (primary_token, _) = tokens.get_unchecked(0);
-            let primary_balance = balances.get(primary_token.clone()).unwrap_or(0);
 
             let will = Will {
                 id: will_id,
@@ -3784,6 +3782,21 @@ fn total_checked_add(total: &mut u32, value: u32, env: &Env) {
         Some(sum) => sum,
         None => panic_with_error!(env, WillError::InvalidPercentages),
     };
+}
+
+/// Sums every locked amount in a will's `balances` map.
+///
+/// Used by `merge_beneficiaries` to weigh each will's beneficiaries against
+/// the **combined value across every token it holds**, so a will locking a
+/// secondary token is no longer valued at its legacy primary-token mirror
+/// alone (#382). The sum is saturating so a pathological multi-token balance
+/// cannot wrap around into a negative total.
+fn total_balance(balances: &Map<Address, i128>) -> i128 {
+    let mut total: i128 = 0;
+    for (_, amount) in balances.iter() {
+        total = total.saturating_add(amount);
+    }
+    total
 }
 
 /// Returns `balances`' entry for `primary_token`, or 0 when the will holds
