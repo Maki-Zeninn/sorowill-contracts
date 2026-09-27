@@ -58,7 +58,7 @@
     ],
     "Beneficiary": ["address: Address", "basis_points: u32"],
     "Guardian": ["address: Address", "weight: u32"],
-    "WillStatus": ["Active", "Triggered", "Released", "Cancelled", "Settled"],
+    "WillStatus": ["PendingConfirmation", "Active", "Triggered", "Released", "Cancelled", "Settled"],
 
     "GuardianVoteReason": ["Deceased", "Incapacitated", "Unreachable", "Other"],
     "ProtocolStats": ["active_will_count: u64", "total_locked_by_token: Vec<TokenLockedBalance>"],
@@ -107,6 +107,11 @@
     { "code": 20, "name": "InvalidGuardianThreshold" },
     { "code": 38, "name": "GuardianNotConsented" },
     { "code": 39, "name": "PrimaryTokenMismatch" },
-    { "code": 40, "name": "InvalidTokenCount" }
+    { "code": 40, "name": "DuplicateToken" },
+    { "code": 41, "name": "BatchTooLarge" },
+    { "code": 42, "name": "InvalidTokenCount" },
+    { "code": 43, "name": "InvalidPreimageLength" },
+    { "code": 44, "name": "InvalidCommitmentLength" },
+    { "code": 45, "name": "DuplicateCommitment" }
   ]
 }

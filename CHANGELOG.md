@@ -12,13 +12,72 @@ gets its own [contract spec artifact](./spec) once exported.
 
 ### Added
 
+- `WillError::DuplicateWillId` (code 45): `batch_check_in` now rejects a
+  `will_ids` list that names the same will twice, instead of processing the
+  repeat and emitting a redundant `check_in` event for it (#355). `README.md`
+  and `spec/will-v0.1.0.json` are updated for the new code.
 - `WillError::DuplicateToken` (code 40): `create_will` and `batch_create_wills`
   now reject a `tokens` list that names the same token address twice (#350).
 - `get_will_history` now records the `confirm_will` (`PendingConfirmation` to
   `Active`) and `close_will` (`Released` to `Settled`) transitions (#352).
+- Restored five `WillError` variants that entry points and tests already
+  referenced but which were missing from the enum, so the crate compiles:
+  `BatchTooLarge` (41), `InvalidTokenCount` (42), `InvalidPreimageLength` (43),
+  `InvalidCommitmentLength` (44) and `DuplicateCommitment` (45).
+- Guardian consent is now observable from events: `accept_guardian_role`
+  publishes `"gaccept"` and `reject_guardian_role` publishes `"greject"`, each
+  with the guardian address as the payload. Both entry points already mutated a
+  guardian's consent field — the gate on whether they may vote in
+  `guardian_trigger` — but published nothing, so an indexer rebuilding will
+  state from events alone could not tell when a guardian became eligible to vote
+  or was rejected (#386).
+
+### Changed
+
+- Corrected the `WillError` docs for `FixedAmountExceedsBalance`,
+  `InvalidGuardianThreshold` and `TooManyBeneficiaries` so each states exactly
+  when it is raised. The wording is generated into the SDK and client error
+  references, which integrators rely on to interpret error codes (#389).
+- Corrected the `Will` field docs for `beneficiaries`, `hashed_beneficiaries`,
+  `guardian_threshold` and `guardian_vote_weight` in `contracts/will/src/types.rs`.
+  `beneficiaries` claimed shares "always sum to 10,000" (false once
+  `Allocation::FixedAmount` entries are allowed), `hashed_beneficiaries` used a
+  "100-sum" against the rest of the contract's 10,000 basis points, and
+  `guardian_threshold` was described as a count of distinct votes rather than a
+  comparison against accumulated weight (#388).
+- Rewrote the `WillStatus` lifecycle diagram. The old one showed a
+  `partial_release` transition back to `Active` that no entry point implements,
+  and omitted `PendingConfirmation` — the state every will created with a
+  confirmation delay starts in. The new diagram shows `PendingConfirmation` with
+  its `confirm_will` and `cancel_will` transitions, and every arrow maps to a
+  real entry point (#387).
 
 ### Fixed
 
+- `update_guardians_weighted` now accumulates guardian weights with
+  `checked_add` and enforces a new public `MAX_GUARDIAN_WEIGHT` (1_000_000) cap
+  per guardian. A weight list whose `u32` total overflows used to abort the call
+  with an opaque arithmetic trap (the release profile keeps `overflow-checks` on)
+  rather than a typed `WillError`; it now returns
+  `InvalidGuardianThreshold` (#356).
+- `update_periods` now emits a `periodu` `next_deadline` of
+  `last_checkin + checkin_period_days` — the deadline `trigger_will` actually
+  enforces — instead of `now + checkin_period_days`. Off-chain consumers that
+  display or schedule reminders from the event are no longer told a deadline
+  that is later than the true one by the age of the current check-in (#357).
+- `release_inheritance` now requires `now` to be *strictly greater* than the
+  grace deadline, so the deadline second belongs to the owner's
+  `emergency_checkin` and exactly one of the two entry points succeeds at any
+  timestamp (#354). Previously both were valid at `now == deadline`, so the
+  outcome depended on which transaction the ledger ordered first. The rustdoc
+  for both functions, for `guardian_cancel_trigger` and for
+  `get_time_until_deadline` now states which side owns the boundary second.
+- Restored five `WillError` variants (`InvalidTokenCount`, `InvalidPreimageLength`,
+  `InvalidCommitmentLength`, `DuplicateCommitment`, `BatchTooLarge`) and the
+  `total_balance` helper that a bad merge had dropped, which left `main` failing
+  to compile. The variants are re-numbered 41-45 so the already-published
+  `DuplicateToken` (40) keeps its code; `README.md` and `spec/will-v0.1.0.json`
+  are updated to match.
 - `create_will` / `cancel_will` now record the will's real status in the audit
   trail instead of a hardcoded `Active`, so `get_will_history` is accurate for
   wills created with a confirmation delay and cancelled while pending (#351).
