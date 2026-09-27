@@ -122,6 +122,8 @@ mod issue_183_test;
 #[cfg(test)]
 mod issue_354_test;
 #[cfg(test)]
+mod issue_356_test;
+#[cfg(test)]
 mod issue_357_test;
 #[cfg(test)]
 mod issue_414_test;
@@ -378,6 +380,21 @@ const MAX_KEEPER_BOUNTY_BPS: u32 = 100;
 
 /// Maximum number of ids that can be passed to `get_wills` in a single call.
 const MAX_GET_WILLS_IDS: u32 = 50;
+
+/// Maximum vote weight a single guardian may be given on a will.
+///
+/// `GuardianSpec::weight` is a caller-supplied `u32` with no inherent bound,
+/// while both the quorum check in `update_guardians_weighted` and the live
+/// tallies in `storage::recount_guardian_votes` are `u32`. Bounding the
+/// per-guardian weight keeps a list of at most [`MAX_GUARDIANS`] guardians far
+/// inside `u32` — the largest reachable total is `3 * MAX_GUARDIAN_WEIGHT` —
+/// so a total-weight computation can no longer be pushed to overflow by a
+/// caller (#356).
+///
+/// A million-fold weighting already expresses any practical preference between
+/// guardians (say 1 against 1_000_000 for a single dominant guardian), so the
+/// cap costs no real expressiveness. A weight of `0` is still normalised to `1`.
+pub const MAX_GUARDIAN_WEIGHT: u32 = 1_000_000;
 
 soroban_sdk::contractmeta!(
     key = "Description",
@@ -1385,6 +1402,15 @@ impl WillContract {
     /// - `owner`: the will's owner; must authorize this call
     /// - `guardians`: list of `GuardianSpec` entries containing address and weight
     /// - `guardian_threshold`: optional threshold required for quorum
+    ///
+    /// # Panics
+    /// - [`WillError::NotOwner`] if `owner` does not own `will_id`.
+    /// - [`WillError::WillNotActive`] if the will is not `Active`.
+    /// - [`WillError::InvalidGuardianThreshold`] if a guardian's weight exceeds
+    ///   [`MAX_GUARDIAN_WEIGHT`], if the weights sum to more than `u32::MAX`, or
+    ///   if the resulting threshold is not in `1..=total_weight`. The sum is
+    ///   accumulated with [`u32::checked_add`], so an unrepresentable total is
+    ///   reported as a typed error rather than an arithmetic trap (#356).
     pub fn update_guardians_weighted(
         env: Env,
         will_id: u64,
@@ -1408,7 +1434,27 @@ impl WillContract {
             // accumulated vote *weight*, not vote count, so the threshold must
             // be validated against the guardians' total weight rather than
             // their count.
-            let total_weight: u32 = guardians.iter().map(|g| g.weight.max(1)).sum();
+            //
+            // Weights are caller-supplied, so the sum is accumulated with
+            // `checked_add` rather than `sum()`: a few large weights would
+            // otherwise overflow the `u32` total and, with the release
+            // profile's `overflow-checks` on, abort the whole call with an
+            // opaque arithmetic trap instead of a typed error the caller can
+            // act on (#356). The per-guardian `MAX_GUARDIAN_WEIGHT` cap is
+            // enforced in the same loop and keeps the sum well inside `u32`;
+            // `checked_add` is kept as the guarantee that no future change to
+            // that cap can reintroduce a trap here.
+            let mut total_weight: u32 = 0;
+            for g in guardians.iter() {
+                let weight = g.weight.max(1);
+                if weight > MAX_GUARDIAN_WEIGHT {
+                    panic_with_error!(&env, WillError::InvalidGuardianThreshold);
+                }
+                match total_weight.checked_add(weight) {
+                    Some(sum) => total_weight = sum,
+                    None => panic_with_error!(&env, WillError::InvalidGuardianThreshold),
+                }
+            }
             let threshold_range = 1..=total_weight;
             if !threshold_range.contains(&threshold) {
                 panic_with_error!(&env, WillError::InvalidGuardianThreshold);

@@ -50,6 +50,12 @@ gets its own [contract spec artifact](./spec) once exported.
 
 ### Fixed
 
+- `update_guardians_weighted` now accumulates guardian weights with
+  `checked_add` and enforces a new public `MAX_GUARDIAN_WEIGHT` (1_000_000) cap
+  per guardian. A weight list whose `u32` total overflows used to abort the call
+  with an opaque arithmetic trap (the release profile keeps `overflow-checks` on)
+  rather than a typed `WillError`; it now returns
+  `InvalidGuardianThreshold` (#356).
 - `update_periods` now emits a `periodu` `next_deadline` of
   `last_checkin + checkin_period_days` — the deadline `trigger_will` actually
   enforces — instead of `now + checkin_period_days`. Off-chain consumers that
