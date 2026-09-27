@@ -103,4 +103,23 @@ pub enum WillError {
     /// duplicated entry would make the legacy `balance` mirror disagree with
     /// the accumulated `balances` map (#350).
     DuplicateToken = 40,
+    /// The token list supplied to `create_will`, `clone_will`, `split_will`,
+    /// or `batch_create_wills` was empty, or contained more than
+    /// `MAX_TOKENS` entries.
+    InvalidTokenCount = 41,
+    /// `batch_check_in` was called with more than
+    /// `batch_check_in_limit::MAX_BATCH_CHECK_IN` will ids.
+    BatchTooLarge = 42,
+    /// `reveal_and_claim` was called with a pre-image that is not exactly
+    /// `PREIMAGE_LENGTH` (64) bytes, so it can never be a well-formed
+    /// `address || salt` pre-image.
+    InvalidPreimageLength = 43,
+    /// `add_hashed_beneficiary` was called with a commitment that is not
+    /// exactly 32 bytes, so it cannot be a SHA-256 digest and no pre-image
+    /// can ever match it.
+    InvalidCommitmentLength = 44,
+    /// `add_hashed_beneficiary` was called with a commitment that is already
+    /// registered on this will. `reveal_and_claim` always matches the first
+    /// matching slot, so a duplicate would leave the second unclaimable.
+    DuplicateCommitment = 45,
 }

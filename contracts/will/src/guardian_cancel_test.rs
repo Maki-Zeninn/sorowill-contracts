@@ -228,7 +228,9 @@ fn weighted_guardian_voting_reaches_quorum_based_on_vote_weight() {
     env.ledger().set_timestamp(1_700_000_000);
 
     let owner = Address::generate(&env);
-    let token_address = env.register_stellar_asset_contract_v2(owner.clone()).address();
+    let token_address = env
+        .register_stellar_asset_contract_v2(owner.clone())
+        .address();
     StellarAssetClient::new(&env, &token_address).mint(&owner, &1_000_000);
 
     let contract_id = env.register(WillContract, ());

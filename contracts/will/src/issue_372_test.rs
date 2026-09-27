@@ -37,7 +37,9 @@ fn setup() -> (Env, Address, Address, Address, u64) {
     env.ledger().set_timestamp(1_700_000_000);
 
     let owner = Address::generate(&env);
-    let token_address = env.register_stellar_asset_contract_v2(owner.clone()).address();
+    let token_address = env
+        .register_stellar_asset_contract_v2(owner.clone())
+        .address();
     StellarAssetClient::new(&env, &token_address).mint(&owner, &1_000_000);
 
     let contract_id = env.register(WillContract, ());
@@ -96,7 +98,8 @@ fn repeated_release_votes_across_an_expiry_window_cannot_reach_the_threshold() {
 
     // One second past the expiry window: the first vote is now stale and the
     // same guardian is allowed to vote again.
-    env.ledger().with_mut(|l| l.timestamp += GRACE_DAYS * DAY + 1);
+    env.ledger()
+        .with_mut(|l| l.timestamp += GRACE_DAYS * DAY + 1);
     client.guardian_trigger(&will_id, &guardian_a, &GuardianVoteReason::Deceased);
 
     let will = client.get_will(&will_id);
@@ -117,11 +120,20 @@ fn repeated_release_votes_across_an_expiry_window_cannot_reach_the_threshold() {
     assert_eq!(client.get_will(&will_id).status, WillStatus::Released);
 }
 
-/// The same test as above, for the cancel namespace: one guardian casting two
-/// cancel votes across an expiry window must not return the will to `Active`.
+/// A cancel quorum may not rewind a will whose grace period has already
+/// elapsed.
+///
+/// This scenario used to assert that one guardian casting two cancel votes
+/// across an expiry window could not reach the threshold on their own. That
+/// path stopped being reachable when #373 added the grace-period deadline to
+/// `guardian_cancel_trigger`: the cancel vote expiry window *is* the grace
+/// period, so by the time a cancel vote expires the estate is already
+/// releasable and the second vote is refused outright. The property still
+/// matters — a single guardian must not be able to cancel the trigger — and it
+/// is now enforced at the deadline rather than in the tally.
 #[test]
-fn repeated_cancel_votes_across_an_expiry_window_cannot_reach_the_threshold() {
-    let (env, contract_id, guardian_a, guardian_b, will_id) = setup();
+fn a_cancel_quorum_cannot_rewind_a_will_past_its_grace_period() {
+    let (env, contract_id, guardian_a, _guardian_b, will_id) = setup();
     let client = WillContractClient::new(&env, &contract_id);
 
     trigger(&env, &client, will_id);
@@ -129,26 +141,25 @@ fn repeated_cancel_votes_across_an_expiry_window_cannot_reach_the_threshold() {
     client.guardian_cancel_trigger(&will_id, &guardian_a);
     assert_eq!(client.get_will(&will_id).guardian_cancel_vote_weight, 1);
 
-    // Move past both the grace period (the cancel deadline) and the vote expiry
-    // window, then let the very same guardian cancel again.
-    env.ledger().with_mut(|l| l.timestamp += GRACE_DAYS * DAY + 1);
-    client.guardian_cancel_trigger(&will_id, &guardian_a);
+    // Move past the grace period — which is also the cancel-vote expiry
+    // window — and let the very same guardian try to cancel again.
+    env.ledger()
+        .with_mut(|l| l.timestamp += GRACE_DAYS * DAY + 1);
+    assert_eq!(
+        client.try_guardian_cancel_trigger(&will_id, &guardian_a),
+        Err(Ok(WillError::GracePeriodExpired.into()))
+    );
 
     let will = client.get_will(&will_id);
     assert_eq!(
         will.status,
         WillStatus::Triggered,
-        "one guardian voting twice across an expiry window must not cancel the trigger"
+        "the trigger must stand once the grace period has elapsed"
     );
     assert_eq!(
         will.guardian_cancel_vote_weight, 1,
-        "the stale cancel vote must be replaced, not added to"
+        "the rejected vote must not have been tallied"
     );
-    assert_eq!(will.guardian_cancel_votes, 1);
-
-    // And the recounted tally is still a valid basis for a real quorum.
-    client.guardian_cancel_trigger(&will_id, &guardian_b);
-    assert_eq!(client.get_will(&will_id).status, WillStatus::Active);
 }
 
 /// Two votes inside one expiry window still accumulate: only *expired* records
@@ -226,14 +237,16 @@ fn expired_vote_records_are_deleted_and_live_ones_are_kept() {
 
         // Past the window: the record is gone from storage and contributes 0.
         let later = now + GRACE_DAYS * DAY + 1;
-        let (weight, votes) = crate::storage::recount_guardian_votes(&env, &will, later, GRACE_DAYS);
+        let (weight, votes) =
+            crate::storage::recount_guardian_votes(&env, &will, later, GRACE_DAYS);
         assert_eq!((weight, votes), (0, 0));
         assert!(crate::storage::get_guardian_vote(&env, will_id, &guardian_a).is_none());
     });
 
     // A later vote by a *different* guardian therefore starts from zero, not
     // from the stale record's weight.
-    env.ledger().with_mut(|l| l.timestamp += GRACE_DAYS * DAY + 1);
+    env.ledger()
+        .with_mut(|l| l.timestamp += GRACE_DAYS * DAY + 1);
     client.guardian_trigger(&will_id, &guardian_b, &GuardianVoteReason::Other);
 
     let will = client.get_will(&will_id);

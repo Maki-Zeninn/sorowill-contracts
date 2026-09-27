@@ -2,9 +2,7 @@
 
 //! #422: `split_will` rejects a split list that names an address twice.
 
-use soroban_sdk::{
-    testutils::Address as _, token::StellarAssetClient, vec, Address, Env,
-};
+use soroban_sdk::{testutils::Address as _, token::StellarAssetClient, vec, Address, Env};
 
 use crate::{Allocation, Beneficiary, WillContract, WillContractClient};
 
