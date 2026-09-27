@@ -156,6 +156,8 @@ Every state-mutating entry point publishes exactly one event so that off-chain i
 | `close_will` | `"closed"` | `owner: Address` |
 | `top_up` | `"topup"` | `(owner: Address, token: Address, amount: i128, new_balance: i128)` |
 | `guardian_trigger` | `"gvote"` | `(guardian: Address, weight: u32, total_weight: u32)` |
+| `accept_guardian_role` | `"gaccept"` | `guardian: Address` |
+| `reject_guardian_role` | `"greject"` | `guardian: Address` |
 | `guardian_cancel` (cancel vote) | `"gcvote"` | `(guardian: Address, weight: u32, total_weight: u32)` |
 | `guardian_cancel` (quorum reached) | `"gcancel"` | `(guardian: Address, next_deadline: u64)` |
 | `merge_wills` | `"merged"` | `(owner: Address, consumed_will_id: u64, new_balance: i128, beneficiaries: Vec<Beneficiary>)` — topic uses surviving will id |

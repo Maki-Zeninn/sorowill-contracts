@@ -20,6 +20,13 @@ gets its own [contract spec artifact](./spec) once exported.
   referenced but which were missing from the enum, so the crate compiles:
   `BatchTooLarge` (41), `InvalidTokenCount` (42), `InvalidPreimageLength` (43),
   `InvalidCommitmentLength` (44) and `DuplicateCommitment` (45).
+- Guardian consent is now observable from events: `accept_guardian_role`
+  publishes `"gaccept"` and `reject_guardian_role` publishes `"greject"`, each
+  with the guardian address as the payload. Both entry points already mutated a
+  guardian's consent field — the gate on whether they may vote in
+  `guardian_trigger` — but published nothing, so an indexer rebuilding will
+  state from events alone could not tell when a guardian became eligible to vote
+  or was rejected (#386).
 
 ### Changed
 

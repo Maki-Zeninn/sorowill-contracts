@@ -2207,6 +2207,10 @@ impl WillContract {
     /// - `will_id`: the will to accept guardianship for
     /// - `guardian`: the guardian address accepting the role; must authorize
     ///
+    /// # Events
+    /// Emits [`events::guardian_accepted_role`] (topic `"gaccept"`) with the
+    /// accepting guardian as the payload, after the consent change is saved.
+    ///
     /// # Panics
     /// - [`WillError::WillNotFound`] if the will does not exist.
     /// - [`WillError::NotGuardian`] if `guardian` is not named on this will.
@@ -2251,6 +2255,8 @@ impl WillContract {
 
         will.guardians = updated_guardians;
         storage::save_will(&env, &will);
+
+        events::guardian_accepted_role(&env, will_id, &guardian);
     }
 
     /// Allows a named guardian to reject their role on a will.
@@ -2335,6 +2341,8 @@ impl WillContract {
 
         will.guardians = updated_guardians;
         storage::save_will(&env, &will);
+
+        events::guardian_rejected_role(&env, will_id, &guardian);
     }
 
     // ── #21: Will cloning / templates ────────────────────────────────────
