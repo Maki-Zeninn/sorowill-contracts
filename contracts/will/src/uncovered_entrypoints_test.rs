@@ -5,14 +5,117 @@
 //! `reject_guardian_role`.
 
 use soroban_sdk::{
-    testutils::{Address as _, Ledger},
+    symbol_short,
+    testutils::{Address as _, Events, Ledger},
     token::StellarAssetClient,
-    vec, Address, Env, Vec as SorobanVec,
+    vec, Address, Env, TryIntoVal, Vec as SorobanVec,
 };
 
 use crate::{
     Allocation, Beneficiary, GuardianVoteReason, WillContract, WillContractClient, WillError,
 };
+
+/// Creates a one-guardian will and returns the will id plus the guardian.
+fn setup_with_guardian<'a>() -> (Env, WillContractClient<'a>, Address, u64, Address) {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_700_000_000);
+
+    let owner = Address::generate(&env);
+    let sac = env.register_stellar_asset_contract_v2(owner.clone());
+    let token_address = sac.address();
+    StellarAssetClient::new(&env, &token_address).mint(&owner, &1_000_000_000);
+
+    let contract_id = env.register(WillContract, ());
+    let client = WillContractClient::new(&env, &contract_id);
+
+    let beneficiary = Address::generate(&env);
+    let guardian = Address::generate(&env);
+
+    let beneficiaries: SorobanVec<Beneficiary> = vec![
+        &env,
+        Beneficiary {
+            address: beneficiary,
+            allocation: Allocation::Percentage(10_000),
+        },
+    ];
+    let tokens: SorobanVec<(Address, i128)> = vec![&env, (token_address, 1_000_000_i128)];
+
+    let will_id = client.create_will(
+        &owner,
+        &tokens,
+        &beneficiaries,
+        &90,
+        &7,
+        &vec![&env, guardian.clone()],
+        &1,
+        &None,
+        &0,
+    );
+
+    (env, client, owner, will_id, guardian)
+}
+
+/// Returns the payload of the single event whose topic is `(symbol, will_id)`.
+fn find_payload(env: &Env, symbol: soroban_sdk::Symbol, will_id: u64) -> Option<soroban_sdk::Val> {
+    env.events().all().iter().find_map(|event| {
+        let t0: Result<soroban_sdk::Symbol, _> = event.1.get(0)?.try_into_val(env);
+        let t1: Result<u64, _> = event.1.get(1)?.try_into_val(env);
+        match (t0, t1) {
+            (Ok(s), Ok(id)) if s == symbol && id == will_id => Some(event.2),
+            _ => None,
+        }
+    })
+}
+
+#[test]
+fn accept_guardian_role_publishes_gaccept_with_the_guardian() {
+    let (env, client, _owner, will_id, guardian) = setup_with_guardian();
+
+    client.accept_guardian_role(&will_id, &guardian);
+
+    let payload = find_payload(&env, symbol_short!("gaccept"), will_id)
+        .expect("accept_guardian_role must publish a gaccept event");
+    let address: Result<Address, _> = payload.try_into_val(&env);
+    assert_eq!(
+        address,
+        Ok(guardian),
+        "gaccept payload must be the accepting guardian"
+    );
+}
+
+#[test]
+fn reject_guardian_role_publishes_greject_with_the_guardian() {
+    let (env, client, _owner, will_id, guardian) = setup_with_guardian();
+
+    client.reject_guardian_role(&will_id, &guardian);
+
+    let payload = find_payload(&env, symbol_short!("greject"), will_id)
+        .expect("reject_guardian_role must publish a greject event");
+    let address: Result<Address, _> = payload.try_into_val(&env);
+    assert_eq!(
+        address,
+        Ok(guardian),
+        "greject payload must be the rejecting guardian"
+    );
+}
+
+#[test]
+fn accept_then_reject_publishes_the_matching_reject_event() {
+    // `env.events().all()` only retains events from the last top-level
+    // invocation, so the accept and the reject have to be checked in separate
+    // tests. Here the last call is the reject, so the greject event is what
+    // must be visible — and gaccept must have been cleared with the accept.
+    let (env, client, _owner, will_id, guardian) = setup_with_guardian();
+
+    client.accept_guardian_role(&will_id, &guardian);
+    client.reject_guardian_role(&will_id, &guardian);
+
+    assert!(
+        find_payload(&env, symbol_short!("greject"), will_id).is_some(),
+        "the most recent guardian-consent event must be greject"
+    );
+}
 
 fn setup<'a>() -> (Env, WillContractClient<'a>, Address, Address) {
     let env = Env::default();

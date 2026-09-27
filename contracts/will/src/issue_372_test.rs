@@ -120,17 +120,15 @@ fn repeated_release_votes_across_an_expiry_window_cannot_reach_the_threshold() {
     assert_eq!(client.get_will(&will_id).status, WillStatus::Released);
 }
 
-/// A cancel quorum may not rewind a will whose grace period has already
-/// elapsed.
+/// The same scenario as above, for the cancel namespace.
 ///
-/// This scenario used to assert that one guardian casting two cancel votes
-/// across an expiry window could not reach the threshold on their own. That
-/// path stopped being reachable when #373 added the grace-period deadline to
-/// `guardian_cancel_trigger`: the cancel vote expiry window *is* the grace
-/// period, so by the time a cancel vote expires the estate is already
-/// releasable and the second vote is refused outright. The property still
-/// matters — a single guardian must not be able to cancel the trigger — and it
-/// is now enforced at the deadline rather than in the tally.
+/// Note the cancel side no longer has a window in which a vote can expire
+/// *and* remain acceptable: the vote expiry window is the grace period, and
+/// since #373 a cancel quorum is rejected once that same grace deadline
+/// passes. So the second cancel attempt is expected to fail with
+/// `GracePeriodExpired` rather than to be recorded — the will must stay
+/// `Triggered`, which is the property this test is really about: one guardian
+/// can never return the will to `Active` on their own.
 #[test]
 fn a_cancel_quorum_cannot_rewind_a_will_past_its_grace_period() {
     let (env, contract_id, guardian_a, _guardian_b, will_id) = setup();
@@ -141,14 +139,15 @@ fn a_cancel_quorum_cannot_rewind_a_will_past_its_grace_period() {
     client.guardian_cancel_trigger(&will_id, &guardian_a);
     assert_eq!(client.get_will(&will_id).guardian_cancel_vote_weight, 1);
 
-    // Move past the grace period — which is also the cancel-vote expiry
-    // window — and let the very same guardian try to cancel again.
+    // Move past the grace period (the cancel deadline) and let the very same
+    // guardian try again.
     env.ledger()
         .with_mut(|l| l.timestamp += GRACE_DAYS * DAY + 1);
-    assert_eq!(
-        client.try_guardian_cancel_trigger(&will_id, &guardian_a),
-        Err(Ok(WillError::GracePeriodExpired.into()))
-    );
+    let err = client
+        .try_guardian_cancel_trigger(&will_id, &guardian_a)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, WillError::GracePeriodExpired.into());
 
     let will = client.get_will(&will_id);
     assert_eq!(
@@ -158,8 +157,15 @@ fn a_cancel_quorum_cannot_rewind_a_will_past_its_grace_period() {
     );
     assert_eq!(
         will.guardian_cancel_vote_weight, 1,
-        "the rejected vote must not have been tallied"
+        "the rejected second vote must not have been recorded"
     );
+    assert_eq!(will.guardian_cancel_votes, 1);
+
+    // The other guardian cannot cancel either — the grace period is over for
+    // everyone, which is the whole point of holding guardians to one deadline.
+    assert!(client
+        .try_guardian_cancel_trigger(&will_id, &guardian_b)
+        .is_err());
 }
 
 /// Two votes inside one expiry window still accumulate: only *expired* records
