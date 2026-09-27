@@ -130,8 +130,8 @@ fn repeated_release_votes_across_an_expiry_window_cannot_reach_the_threshold() {
 /// `Triggered`, which is the property this test is really about: one guardian
 /// can never return the will to `Active` on their own.
 #[test]
-fn repeated_cancel_votes_across_an_expiry_window_cannot_reach_the_threshold() {
-    let (env, contract_id, guardian_a, guardian_b, will_id) = setup();
+fn a_cancel_quorum_cannot_rewind_a_will_past_its_grace_period() {
+    let (env, contract_id, guardian_a, _guardian_b, will_id) = setup();
     let client = WillContractClient::new(&env, &contract_id);
 
     trigger(&env, &client, will_id);
@@ -153,7 +153,7 @@ fn repeated_cancel_votes_across_an_expiry_window_cannot_reach_the_threshold() {
     assert_eq!(
         will.status,
         WillStatus::Triggered,
-        "one guardian voting twice across an expiry window must not cancel the trigger"
+        "the trigger must stand once the grace period has elapsed"
     );
     assert_eq!(
         will.guardian_cancel_vote_weight, 1,

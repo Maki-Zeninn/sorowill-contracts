@@ -605,7 +605,7 @@ impl WillContract {
 
         // Fixed amounts are denominated in the will's primary token, which is
         // the first entry of `tokens` (mirrored into `Will::token` below).
-        let (primary_token, primary_amount) = tokens.get_unchecked(0);
+        let (primary_token, _) = tokens.get_unchecked(0);
         assert_valid_allocations(
             &env,
             &beneficiaries,
@@ -644,7 +644,7 @@ impl WillContract {
             balances,
             token: primary_token,
             is_native: false,
-            balance: primary_amount,
+            balance: primary_balance,
             beneficiaries,
             hashed_beneficiaries: Vec::new(&env),
             checkin_period_days,
@@ -2732,7 +2732,7 @@ impl WillContract {
 
             // Fixed amounts are denominated in the primary token, the first
             // entry of `tokens` (#384).
-            let (primary_token, primary_amount) = tokens.get_unchecked(0);
+            let (primary_token, _) = tokens.get_unchecked(0);
             assert_valid_allocations(
                 &env,
                 &beneficiaries,
@@ -2764,7 +2764,7 @@ impl WillContract {
                 balances,
                 token: primary_token,
                 is_native: false,
-                balance: primary_amount,
+                balance: primary_balance,
                 beneficiaries,
                 hashed_beneficiaries: Vec::new(&env),
                 checkin_period_days,
