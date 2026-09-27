@@ -122,6 +122,8 @@ mod issue_183_test;
 #[cfg(test)]
 mod issue_354_test;
 #[cfg(test)]
+mod issue_357_test;
+#[cfg(test)]
 mod issue_414_test;
 
 /// Regression test for issue #184: `merge_wills` refuses mismatched primary tokens.
@@ -1452,6 +1454,15 @@ impl WillContract {
     /// - [`WillError::WillNotActive`] if the will is not `Active`.
     /// - [`WillError::InvalidPeriod`] if either period is zero or exceeds
     ///   [`MAX_PERIOD_DAYS`].
+    ///
+    /// # Events
+    /// Emits [`events::periods_updated`] whose `next_deadline` field is the
+    /// deadline [`Self::trigger_will`] actually enforces, namely
+    /// `last_checkin + checkin_period_days * SECONDS_PER_DAY`. This function
+    /// never touches `last_checkin`, so that value is independent of when the
+    /// owner happens to call: an indexer that schedules reminders from the event
+    /// stays in sync with the on-chain rule instead of drifting later by however
+    /// long it has been since the last check-in (#357).
     pub fn update_periods(
         env: Env,
         will_id: u64,
@@ -1481,8 +1492,11 @@ impl WillContract {
             will.grace_period_days = new_grace;
         }
 
-        let now = env.ledger().timestamp();
-        let next_deadline = now + will.checkin_period_days * SECONDS_PER_DAY;
+        // `trigger_will` derives the deadline from `last_checkin`, which this call
+        // leaves untouched, so the event must carry that same value rather than
+        // `now + period` — otherwise the published deadline is later than the
+        // enforced one by the age of the current check-in (#357).
+        let next_deadline = will.last_checkin + will.checkin_period_days * SECONDS_PER_DAY;
         storage::save_will(&env, &will);
 
         events::periods_updated(
@@ -1520,6 +1534,13 @@ impl WillContract {
     /// subscribed to that topic are notified consistently regardless of whether the
     /// guardian change was made through [`Self::update_guardians`] or through this
     /// composite entry point.
+    ///
+    /// Like [`Self::update_periods`], a period change here leaves `last_checkin`
+    /// alone, so the enforced check-in deadline moves to
+    /// `last_checkin + checkin_period_days * SECONDS_PER_DAY`. No deadline is
+    /// published by this function; read the resulting one with
+    /// [`Self::get_time_until_deadline`], or use [`Self::update_periods`] if the
+    /// consumer also needs the `periodu` event (#357).
     ///
     /// # Panics
     /// - [`WillError::NotOwner`] if `owner` does not own `will_id`.
