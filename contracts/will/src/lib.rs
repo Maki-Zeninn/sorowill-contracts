@@ -45,13 +45,13 @@
 //! Grace periods may optionally be split into multiple tiers, each releasing
 //! a configurable percentage of the balance at a different time offset.
 
+mod batch_check_in_limit;
 mod errors;
 mod events;
-mod batch_check_in_limit;
+mod guardian_vote_freshness;
+mod split_uniqueness_check;
 mod storage;
 mod types;
-mod split_uniqueness_check;
-mod guardian_vote_freshness;
 
 /// Reusable harness that drives entry points with arbitrary input and asserts
 /// the contract's invariants. Shared by the `proptest` suite in
@@ -248,6 +248,10 @@ mod issue_298_283_294_test;
 #[cfg(test)]
 mod issue_390_test;
 #[cfg(test)]
+mod issue_420_test;
+#[cfg(test)]
+mod issue_422_test;
+#[cfg(test)]
 mod migrate_will_test;
 #[cfg(test)]
 mod protocol_stats_test;
@@ -257,10 +261,6 @@ mod renounce_validation_test;
 mod set_delegate_test;
 #[cfg(test)]
 mod split_will_test;
-#[cfg(test)]
-mod issue_420_test;
-#[cfg(test)]
-mod issue_422_test;
 // NOTE: `test.rs` (5800+ lines) is intentionally NOT wired in here. It
 // predates the current multi-token/Allocation-enum contract API entirely
 // (it exclusively uses a removed single-token `basis_points` signature) and
@@ -381,10 +381,7 @@ soroban_sdk::contractmeta!(
 );
 // Kept in sync with CONTRACT_VERSION's semver-decoded form by
 // issue_272_test.rs; bump both together.
-soroban_sdk::contractmeta!(
-    key = "Version",
-    val = "1.0.1"
-);
+soroban_sdk::contractmeta!(key = "Version", val = "1.0.1");
 soroban_sdk::contractmeta!(
     key = "Homepage",
     val = "https://github.com/SoroWill/sorowill-contracts"
@@ -2038,7 +2035,8 @@ impl WillContract {
         // the old vote rather than stacking on top of it (#372). Without this a
         // single guardian could vote once per grace period and reach the
         // threshold alone.
-        let (live_weight, live_votes) = storage::recount_guardian_votes(&env, &will, now, expiry_days);
+        let (live_weight, live_votes) =
+            storage::recount_guardian_votes(&env, &will, now, expiry_days);
         will.guardian_vote_weight = live_weight;
         will.guardian_votes = live_votes;
         storage::save_will(&env, &will);
@@ -3345,12 +3343,7 @@ impl WillContract {
 
         // Validate the new slot before mutating the will, so a rejected call
         // leaves no partial state behind (#371).
-        assert_valid_hashed_beneficiary(
-            &env,
-            &will.hashed_beneficiaries,
-            &commitment,
-            percentage,
-        );
+        assert_valid_hashed_beneficiary(&env, &will.hashed_beneficiaries, &commitment, percentage);
 
         will.hashed_beneficiaries.push_back(HashedBeneficiary {
             commitment: commitment.clone(),
@@ -3815,6 +3808,22 @@ fn total_balance(balances: &Map<Address, i128>) -> i128 {
 /// will be approved that `distribute` cannot pay out in full (#384).
 fn primary_token_balance(balances: &Map<Address, i128>, primary_token: &Address) -> i128 {
     balances.get(primary_token.clone()).unwrap_or(0)
+}
+
+/// Sums every token balance in `balances` into a single `i128`, saturating
+/// rather than overflowing.
+///
+/// Used by `merge_beneficiaries` to weigh each will by its combined value
+/// across every token it holds, so a non-primary token is no longer ignored
+/// when merged percentages are derived (#382). Note this is deliberately *not*
+/// the value `Allocation::FixedAmount` entries are validated against — see
+/// [`primary_token_balance`] (#384).
+fn total_balance(balances: &Map<Address, i128>) -> i128 {
+    let mut total: i128 = 0;
+    for (_, amount) in balances.iter() {
+        total = total.saturating_add(amount);
+    }
+    total
 }
 
 /// Asserts a guardian list is no longer than [`MAX_GUARDIANS`] and contains no

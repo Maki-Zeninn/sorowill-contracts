@@ -624,17 +624,17 @@ pub fn set_guardian_cancel_voted(env: &Env, will_id: u64, guardian: &Address, ti
 /// enough to run on every vote.
 ///
 /// Returns the live `(weight, votes)` tallies.
-pub fn recount_guardian_votes(
-    env: &Env,
-    will: &Will,
-    now: u64,
-    expiry_days: u64,
-) -> (u32, u32) {
+pub fn recount_guardian_votes(env: &Env, will: &Will, now: u64, expiry_days: u64) -> (u32, u32) {
     let mut weight: u32 = 0;
     let mut votes: u32 = 0;
     for guardian in will.guardians.iter() {
         let key = DataKey::GuardianVote(will.id, guardian.address.clone());
-        if env.storage().persistent().get::<_, GuardianVoteRecord>(&key).is_none() {
+        if env
+            .storage()
+            .persistent()
+            .get::<_, GuardianVoteRecord>(&key)
+            .is_none()
+        {
             continue;
         }
         if has_guardian_voted(env, will.id, &guardian.address, now, expiry_days) {
@@ -666,7 +666,12 @@ pub fn recount_guardian_cancel_votes(
     let mut votes: u32 = 0;
     for guardian in will.guardians.iter() {
         let key = DataKey::GuardianCancelVote(will.id, guardian.address.clone());
-        if env.storage().persistent().get::<_, GuardianVoteRecord>(&key).is_none() {
+        if env
+            .storage()
+            .persistent()
+            .get::<_, GuardianVoteRecord>(&key)
+            .is_none()
+        {
             continue;
         }
         if has_guardian_cancel_voted(env, will.id, &guardian.address, now, expiry_days) {
