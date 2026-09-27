@@ -77,12 +77,12 @@ fn trigger_will_adds_id_to_triggered_index() {
         0,
     );
 
-    assert!(client.get_triggered_wills().is_empty());
+    assert!(client.get_triggered_wills(&None, &50).is_empty());
 
     env.ledger().with_mut(|l| l.timestamp += 91 * DAY);
     client.trigger_will(&will_id);
 
-    let triggered = client.get_triggered_wills();
+    let triggered = client.get_triggered_wills(&None, &50);
     assert_eq!(triggered.len(), 1);
     assert_eq!(triggered.get(0).unwrap(), will_id);
 }
@@ -107,10 +107,10 @@ fn emergency_checkin_removes_id_from_triggered_index() {
 
     env.ledger().with_mut(|l| l.timestamp += 91 * DAY);
     client.trigger_will(&will_id);
-    assert_eq!(client.get_triggered_wills().len(), 1);
+    assert_eq!(client.get_triggered_wills(&None, &50).len(), 1);
 
     client.emergency_checkin(&will_id, &owner);
-    assert!(client.get_triggered_wills().is_empty());
+    assert!(client.get_triggered_wills(&None, &50).is_empty());
 }
 
 #[test]
@@ -133,11 +133,11 @@ fn release_inheritance_removes_id_from_triggered_index() {
 
     env.ledger().with_mut(|l| l.timestamp += 91 * DAY);
     client.trigger_will(&will_id);
-    assert_eq!(client.get_triggered_wills().len(), 1);
+    assert_eq!(client.get_triggered_wills(&None, &50).len(), 1);
 
     env.ledger().with_mut(|l| l.timestamp += 8 * DAY);
     client.release_inheritance(&will_id, &None);
-    assert!(client.get_triggered_wills().is_empty());
+    assert!(client.get_triggered_wills(&None, &50).is_empty());
 }
 
 #[test]
@@ -161,11 +161,11 @@ fn guardian_cancel_trigger_removes_id_from_triggered_index() {
 
     env.ledger().with_mut(|l| l.timestamp += 91 * DAY);
     client.trigger_will(&will_id);
-    assert_eq!(client.get_triggered_wills().len(), 1);
+    assert_eq!(client.get_triggered_wills(&None, &50).len(), 1);
 
     client.accept_guardian_role(&will_id, &guardian);
     client.guardian_cancel_trigger(&will_id, &guardian);
-    assert!(client.get_triggered_wills().is_empty());
+    assert!(client.get_triggered_wills(&None, &50).is_empty());
 }
 
 // ── Issue #391: unindex_triggered_will must extend the TTL ────────────────
@@ -218,7 +218,7 @@ fn unindex_triggered_will_extends_ttl() {
     // Get the will into Triggered so the index entry exists at all.
     env.ledger().with_mut(|l| l.timestamp += 91 * DAY);
     client.trigger_will(&will_id);
-    assert_eq!(client.get_triggered_wills().len(), 1);
+    assert_eq!(client.get_triggered_wills(&None, &50).len(), 1);
     let ttl_at_index = triggered_index_ttl(&env, &contract_id);
     assert!(ttl_at_index > 0, "indexing must give the entry a live TTL");
 
@@ -237,7 +237,7 @@ fn unindex_triggered_will_extends_ttl() {
     // unindexes it, with no other will entering the index.
     env.ledger().with_mut(|l| l.timestamp += DAY);
     client.emergency_checkin(&will_id, &owner);
-    assert!(client.get_triggered_wills().is_empty());
+    assert!(client.get_triggered_wills(&None, &50).is_empty());
 
     let ttl_after_unindex = triggered_index_ttl(&env, &contract_id);
     assert!(
@@ -283,7 +283,7 @@ fn unindex_triggered_will_leaves_ttl_untouched_when_id_is_absent() {
 
     env.ledger().with_mut(|l| l.timestamp += 91 * DAY);
     client.trigger_will(&will_id);
-    assert_eq!(client.get_triggered_wills().len(), 1);
+    assert_eq!(client.get_triggered_wills(&None, &50).len(), 1);
 
     env.ledger()
         .with_mut(|l| l.sequence_number += DAY_IN_LEDGERS * 40);
@@ -300,7 +300,7 @@ fn unindex_triggered_will_leaves_ttl_untouched_when_id_is_absent() {
         "an unindex of an absent id must not renew the entry's TTL",
     );
     assert_eq!(
-        client.get_triggered_wills().get(0).unwrap(),
+        client.get_triggered_wills(&None, &50).get(0).unwrap(),
         will_id,
         "the present id must be untouched by the no-op unindex",
     );

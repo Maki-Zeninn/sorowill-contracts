@@ -155,7 +155,7 @@ fn archive_triggered_will_removes_id_from_triggered_index() {
 
     // The will's id must now appear in the triggered-wills index.
     assert_eq!(
-        client.get_triggered_wills().len(),
+        client.get_triggered_wills(&None, &50).len(),
         1,
         "triggered will must be in index before archival"
     );
@@ -167,14 +167,14 @@ fn archive_triggered_will_removes_id_from_triggered_index() {
     advance(&env, 8);
     client.release_inheritance(&will_id, &None);
     assert!(
-        client.get_triggered_wills().is_empty(),
+        client.get_triggered_wills(&None, &50).is_empty(),
         "release_inheritance must remove the will's id from the triggered-wills index"
     );
 
     // Archiving the now-Released will must not resurrect the stale id.
     client.archive_will(&will_id);
     assert!(
-        client.get_triggered_wills().is_empty(),
+        client.get_triggered_wills(&None, &50).is_empty(),
         "archiving a released will must not leave a dangling id in the triggered-wills index"
     );
 }

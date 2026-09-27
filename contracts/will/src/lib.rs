@@ -192,6 +192,8 @@ mod issue_guardian_vote_underflow_test;
 /// `guardian_vote_weight` / `guardian_votes` tallies in both
 /// `guardian_trigger` and `guardian_cancel_trigger`.
 #[cfg(test)]
+mod issue_368_test;
+#[cfg(test)]
 mod issue_372_test;
 
 // The following test modules exist as files but were never wired into this
@@ -308,8 +310,9 @@ pub use types::{
 /// so that SDKs and apps can detect version mismatches at runtime via
 /// [`WillContract::get_contract_version`].
 ///
-/// Current baseline: **1.0.0** → `1_000_000`.
-pub const CONTRACT_VERSION: u32 = 1_000_001;
+/// Current value: **1.1.0** → `1_001_000`. 1.1.0 made `get_triggered_wills`
+/// take a `(cursor, limit)` page instead of returning the whole index (#368).
+pub const CONTRACT_VERSION: u32 = 1_001_000;
 
 /// Number of seconds in a day, used to convert the day-denominated periods
 /// stored on a `Will` into absolute ledger timestamps.
@@ -409,7 +412,7 @@ soroban_sdk::contractmeta!(
 );
 // Kept in sync with CONTRACT_VERSION's semver-decoded form by
 // issue_272_test.rs; bump both together.
-soroban_sdk::contractmeta!(key = "Version", val = "1.0.1");
+soroban_sdk::contractmeta!(key = "Version", val = "1.1.0");
 soroban_sdk::contractmeta!(
     key = "Homepage",
     val = "https://github.com/SoroWill/sorowill-contracts"
@@ -1912,14 +1915,37 @@ impl WillContract {
         storage::get_protocol_stats(&env)
     }
 
-    /// Returns the list of will ids currently in `Triggered` status.
+    /// Returns a page of the will ids currently in `Triggered` status.
     ///
     /// This is the on-chain index that lets keeper bots and monitoring tools
     /// efficiently discover wills that are past their check-in deadline and
     /// within their grace period, without having to replay every
     /// `will_triggered` event off-chain.
-    pub fn get_triggered_wills(env: Env) -> Vec<u64> {
-        storage::get_triggered_wills(&env)
+    ///
+    /// # Parameters
+    /// - `cursor`: optional will id to paginate after (exclusive). Pass `None`
+    ///   or `0` for the first page.
+    /// - `limit`: maximum number of ids to return. Capped at
+    ///   [`storage::MAX_PAGE_SIZE`].
+    ///
+    /// # Paging
+    ///
+    /// Pass the last id of the previous page back as `cursor` to fetch the
+    /// next one; page until a page comes back shorter than the `limit` you
+    /// asked for (or empty), which means you have seen the whole index.
+    ///
+    /// # Bounding
+    ///
+    /// The index only ever holds wills that are *currently* `Triggered`:
+    /// `emergency_checkin`, `guardian_cancel_trigger`, `release_inheritance`,
+    /// `guardian_trigger`, `cancel_will`, and `archive_will` all remove the
+    /// id again, using order-preserving removal so paging never skips or
+    /// repeats an entry. A global hard cap is deliberately **not** applied
+    /// here — any single address could otherwise exhaust it and break
+    /// `trigger_will` for the whole protocol. See `storage::index_triggered_will`
+    /// for the full bounding strategy.
+    pub fn get_triggered_wills(env: Env, cursor: Option<u64>, limit: u32) -> Vec<u64> {
+        storage::get_triggered_wills_page(&env, cursor, limit)
     }
 
     /// Returns a page of wills owned by `owner`.

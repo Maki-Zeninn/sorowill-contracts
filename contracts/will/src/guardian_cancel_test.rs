@@ -101,7 +101,7 @@ fn cancel_quorum_returns_triggered_will_to_active() {
     assert_eq!(after_quorum.guardian_cancel_votes, 0);
     assert_eq!(after_quorum.guardian_cancel_vote_weight, 0);
     assert_eq!(
-        client.get_triggered_wills(),
+        client.get_triggered_wills(&None, &50),
         Vec::<u64>::new(&env),
         "a cancelled trigger must be removed from the triggered index"
     );
