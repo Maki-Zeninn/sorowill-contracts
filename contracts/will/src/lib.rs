@@ -271,11 +271,11 @@ mod issue_422_test;
 // removed contract functionality, which is out of scope for a merge-damage
 // cleanup — left disconnected until someone decides what to do with it.
 #[cfg(test)]
+mod uncovered_entrypoints_test;
+#[cfg(test)]
 mod update_will_settings_test;
 #[cfg(test)]
 mod wills_by_owner_status_test;
-#[cfg(test)]
-mod uncovered_entrypoints_test;
 
 use soroban_sdk::{
     contract, contractimpl, panic_with_error, symbol_short, token, Address, Bytes, Env, Map, Vec,
@@ -2348,6 +2348,12 @@ impl WillContract {
     /// `tokens` parameter), a new id, and starts with `Active` status and a
     /// fresh check-in deadline.
     ///
+    /// The guardian list is copied with every consent reset to
+    /// [`GuardianConsent::Pending`] (addresses and vote weights are preserved),
+    /// exactly like [`create_will`]: a guardian must be asked about the clone
+    /// before they can vote on it, so consent recorded on the source will does
+    /// not carry over (#375).
+    ///
     /// The source will must be `Active` or `Triggered`. Cloning is
     /// deliberately *not* allowed from a `Cancelled`, `Released`, or
     /// `Settled` source: an owner who let a will resolve to one of those
@@ -2459,7 +2465,7 @@ impl WillContract {
             trigger_time: None,
             confirmation_deadline: None,
             status: WillStatus::Active,
-            guardians: source.guardians.clone(),
+            guardians: reset_guardian_consent(&env, &source.guardians),
             guardian_vote_weight: 0,
             guardian_votes: 0,
             guardian_cancel_vote_weight: 0,
@@ -3020,6 +3026,12 @@ impl WillContract {
     /// it starts `Active` with the same check-in period, grace period,
     /// co-owners, and threshold as the original.
     ///
+    /// The child inherits the source's guardians and threshold, but every
+    /// guardian's consent is reset to [`GuardianConsent::Pending`] (addresses
+    /// and vote weights are preserved), exactly like [`create_will`]: a
+    /// guardian must be asked about the child will before they can vote on it,
+    /// so consent recorded on the source does not carry over (#375).
+    ///
     /// # Parameters
     /// - `will_id`: the source will to split from.
     /// - `owner`: must be the primary owner of the source will.
@@ -3171,7 +3183,7 @@ impl WillContract {
             trigger_time: None,
             confirmation_deadline: None,
             status: WillStatus::Active,
-            guardians: source.guardians.clone(),
+            guardians: reset_guardian_consent(&env, &source.guardians),
             guardian_vote_weight: 0,
             guardian_votes: 0,
             guardian_cancel_vote_weight: 0,
