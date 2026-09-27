@@ -200,6 +200,8 @@ mod confirm_will_test;
 #[cfg(test)]
 mod contract_interface_test;
 #[cfg(test)]
+mod create_will_doc_example_test;
+#[cfg(test)]
 mod entrypoint_coverage_test;
 #[cfg(test)]
 mod get_contract_version_test;
@@ -407,14 +409,22 @@ impl WillContract {
     /// - `tokens`: a list of `(token_address, amount)` pairs to lock. Each
     ///   token address must be unique, each amount must be positive, and the
     ///   list must contain between 1 and `MAX_TOKENS` entries.
-    /// - `beneficiaries`: 1 to `MAX_BENEFICIARIES` entries. Percentage
-    ///   allocations must sum to exactly 10,000 basis points; fixed amounts
-    ///   are denominated in the will's **primary token** (the first entry of
-    ///   `tokens`) and their sum must not exceed that token's amount. A list
-    ///   made up only of `Allocation::FixedAmount` entries may leave value
-    ///   unallocated — whatever the fixed amounts do not claim is refunded to
-    ///   the owner when the inheritance is released (see [`Allocation`] and
-    ///   issue #383).
+    /// - `beneficiaries`: 1 to `MAX_BENEFICIARIES` entries. Each entry carries
+    ///   an [`Allocation`], which is one of two kinds:
+    ///   - `Allocation::Percentage(bps)` — a share of the will's balance. **All
+    ///     percentage allocations together must sum to exactly 10,000 basis
+    ///     points**, and each individual percentage must be greater than
+    ///     zero.
+    ///   - `Allocation::FixedAmount(amount)` — an exact claim on the will's
+    ///     **primary token** (the first entry of `tokens`). Fixed amounts do
+    ///     not take part in the 10,000 bps sum, but they may not add up to more
+    ///     than the will holds of that primary token
+    ///     ([`WillError::FixedAmountExceedsBalance`]).
+    ///
+    ///   A list made up only of `Allocation::FixedAmount` entries may leave
+    ///   value unallocated — whatever the fixed amounts do not claim is
+    ///   refunded to the owner when the inheritance is released (see
+    ///   [`Allocation`] and issue #383).
     /// - `checkin_period_days`: how many days the owner may go without checking
     ///   in; 1 to `MAX_PERIOD_DAYS`.
     /// - `grace_period_days`: how many days after being triggered the owner has
@@ -434,7 +444,11 @@ impl WillContract {
     ///   lists are empty or exceed their respective caps.
     /// - [`WillError::InvalidTokenCount`] if the token list is empty or
     ///   exceeds `MAX_TOKENS`.
-    /// - [`WillError::InvalidPercentages`] if beneficiary basis points do not sum to 10,000.
+    /// - [`WillError::InvalidPercentages`] if the `Allocation::Percentage`
+    ///   entries do not sum to 10,000, or any single percentage is zero.
+    /// - [`WillError::FixedAmountExceedsBalance`] if the
+    ///   `Allocation::FixedAmount` entries add up to more than the will holds
+    ///   of its primary token.
     /// - [`WillError::DuplicateBeneficiary`] if the same address is supplied twice.
     /// - [`WillError::DuplicateGuardian`] if the same guardian is supplied twice.
     /// - [`WillError::DuplicateToken`] if the same token address appears more
@@ -452,6 +466,12 @@ impl WillContract {
     ///
     /// # Examples
     ///
+    /// The snippet below is the rustdoc copy. The **compiled** version of the
+    /// same example lives in `create_will_doc_example_test.rs`
+    /// (`doc_example_creates_a_single_beneficiary_will`), which `cargo test`
+    /// actually runs — rustdoc blocks tagged `ignore` are never compiled, so
+    /// this is what keeps the two from drifting apart again (#366).
+    ///
     /// ```ignore
     /// // Set up the environment and register the contract (test harness only).
     /// let env = Env::default();
@@ -466,12 +486,20 @@ impl WillContract {
     ///
     /// let beneficiary = Address::generate(&env);
     ///
-    /// // Create a will: lock 1 USDC, single beneficiary, 90-day check-in,
-    /// // 7-day grace period, no guardians.
+    /// // Create a will: lock 1 USDC, a single percentage beneficiary taking the
+    /// // whole balance, 90-day check-in, 7-day grace period, no guardians.
     /// let will_id = client.create_will(
     ///     &owner,
     ///     &vec![&env, (usdc_id.clone(), 1_000_000_i128)],
-    ///     &vec![&env, Beneficiary { address: beneficiary.clone(), basis_points: 10_000 }],
+    ///     &vec![
+    ///         &env,
+    ///         Beneficiary {
+    ///             address: beneficiary.clone(),
+    ///             // A percentage allocation is in basis points, and all
+    ///             // percentage allocations together must sum to 10_000.
+    ///             allocation: Allocation::Percentage(10_000),
+    ///         },
+    ///     ],
     ///     &90,  // checkin_period_days
     ///     &7,   // grace_period_days
     ///     &vec![&env],  // no guardians
