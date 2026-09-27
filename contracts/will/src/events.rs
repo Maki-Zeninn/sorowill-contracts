@@ -2,7 +2,10 @@
 //!
 //! Every state-changing entry point publishes exactly one event so that
 //! off-chain indexers (such as the SoroWill SDK/app) can reconstruct will
-//! history without re-simulating transactions.
+//! history without re-simulating transactions. That includes the guardian
+//! consent transitions: [`guardian_accepted_role`] and
+//! [`guardian_rejected_role`] report when a named guardian becomes eligible to
+//! vote in `guardian_trigger`, or loses that eligibility.
 
 use soroban_sdk::{symbol_short, Address, Bytes, Env, Symbol, Vec};
 
@@ -377,6 +380,25 @@ pub fn delegate_set(env: &Env, will_id: u64, owner: &Address, delegate: &Address
 pub fn delegate_cleared(env: &Env, will_id: u64, owner: &Address) {
     env.events()
         .publish((symbol_short!("delegclr"), will_id), owner.clone());
+}
+
+/// Published when a named guardian accepts their role via `accept_guardian_role`.
+///
+/// Consent is what gates a guardian's `guardian_trigger` vote, so without this
+/// event an indexer rebuilding state from events alone cannot tell when a
+/// guardian became eligible to vote.
+pub fn guardian_accepted_role(env: &Env, will_id: u64, guardian: &Address) {
+    env.events()
+        .publish((symbol_short!("gaccept"), will_id), guardian.clone());
+}
+
+/// Published when a named guardian rejects their role via `reject_guardian_role`.
+///
+/// A rejected guardian can no longer vote, so this is the event an indexer
+/// needs in order to drop them from its set of eligible voters.
+pub fn guardian_rejected_role(env: &Env, will_id: u64, guardian: &Address) {
+    env.events()
+        .publish((symbol_short!("greject"), will_id), guardian.clone());
 }
 
 /// Published when a batch check-in resets the deadline for multiple wills in
