@@ -530,6 +530,23 @@ pub fn set_guardian_voted(
         .extend_ttl(&key, LIFETIME_THRESHOLD, BUMP_AMOUNT);
 }
 
+/// Removes the trigger vote recorded for `guardian` against `will_id`, if any.
+///
+/// Used by `reject_guardian_role` so a guardian who withdraws consent after
+/// voting stops contributing weight to the current cycle (#374).
+pub fn clear_guardian_vote(env: &Env, will_id: u64, guardian: &Address) {
+    let key = DataKey::GuardianVote(will_id, guardian.clone());
+    env.storage().persistent().remove(&key);
+}
+
+/// Removes the cancel-trigger vote recorded for `guardian`, if any.
+///
+/// Counterpart to [`clear_guardian_vote`] for the cancel cycle (#374).
+pub fn clear_guardian_cancel_vote(env: &Env, will_id: u64, guardian: &Address) {
+    let key = DataKey::GuardianCancelVote(will_id, guardian.clone());
+    env.storage().persistent().remove(&key);
+}
+
 /// Clears all guardian votes cast against `will`, starting a fresh voting cycle.
 ///
 /// Called whenever a will returns to `Active` (e.g. via `emergency_checkin`)

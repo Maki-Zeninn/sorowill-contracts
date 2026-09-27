@@ -100,11 +100,26 @@ pub struct HashedBeneficiary {
 /// Lifecycle state of a will.
 ///
 /// ```text
-/// Active --(missed check-in)--> Triggered --(grace period expires)--> Released --(close_will)--> Settled
-///   |                               |
-///   |--(cancel_will)--> Cancelled   |--(emergency_checkin)--> Active
-///   |--(partial_release)--> Active  (balance reduced, subset paid)
+/// create_will --(confirmation delay)--> PendingConfirmation
+/// create_will --(no delay)------------> Active
+///     |                                    |
+///     |--(confirm_will)--> Active <--------+
+///     |
+///     |   Active --(missed check-in / trigger_will)--> Triggered
+///     |      |                                            |
+///     |      |--(cancel_will)--> Cancelled               |--(grace period expires)--> Released
+///     |      |                                            |    |
+///     |      |--(emergency_checkin)--> Active            |    |--(close_will)--> Settled
+///     |      |--(guardian_cancel_trigger)--> Active       |    |
+///     |      |--(guardian_trigger quorum)--> Released ----+    |
+///     |                                                          |
+///     +--(cancel_will)--> Cancelled <--(cancel_will, PendingConfirmation)
+///
+/// PendingConfirmation --(cancel_will)--> Cancelled
 /// ```
+///
+/// Every arrow above is a real transition performed by the named entry point;
+/// `check_in` and the other settings updates do not change `status`.
 #[contracttype]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WillStatus {
@@ -185,10 +200,40 @@ pub struct Will {
     /// every writer that touches the primary token's balance must update both
     /// fields together until this mirror is fully removed.
     pub balance: i128,
-    /// The beneficiaries and their basis-point shares. Always sums to 10,000.
+    /// The visible beneficiaries of the will and how each is allocated.
+    ///
+    /// Entries may mix two allocation kinds (see [`Allocation`]), so this
+    /// list does **not** always describe a split of 10,000 basis points.
+    /// `assert_valid_allocations` enforces, on every write:
+    /// - every `Allocation::Percentage(bp)` is non-zero, and the `Percentage`
+    ///   entries together sum to exactly 10,000 basis points. This check only
+    ///   applies when at least one `Percentage` entry is present — a
+    ///   `FixedAmount`-only list has no percentage total to check;
+    /// - every `Allocation::FixedAmount(amount)` is positive, and their sum
+    ///   does not exceed the will's **primary-token** balance
+    ///   ([`Will::token`]). A sum *below* that balance is allowed, since the
+    ///   headroom is reserved for a later `add_hashed_beneficiary` and is
+    ///   otherwise refunded to the owner at release;
+    /// - no address appears twice ([`crate::WillError::DuplicateBeneficiary`]).
+    ///
+    /// So: percentages must sum to 10,000 when present, while fixed amounts
+    /// are bounded above by the primary-token balance and need not account for
+    /// the whole of it.
     pub beneficiaries: Vec<Beneficiary>,
     /// Privacy-preserving beneficiaries registered by commitment hash (issue #46).
-    /// Their percentages count towards the 100-sum together with `beneficiaries`.
+    ///
+    /// Each `HashedBeneficiary::percentage` is expressed in the same basis
+    /// points (1 bp = 0.01 %, 10,000 = 100 %) as `Allocation::Percentage`, not
+    /// in whole percent. They are withheld from the visible beneficiaries'
+    /// share of each token and are claimable later via `reveal_and_claim` once
+    /// the pre-image is revealed.
+    ///
+    /// `assert_valid_percentages` requires the visible `Percentage` entries
+    /// plus every hashed percentage to total at most 10,000 basis points — the
+    /// hashed entries take priority, and the remainder is what the visible
+    /// percentage split divides. Unlike `beneficiaries`, a will with no
+    /// percentage beneficiaries at all is legal, and its leftover primary-token
+    /// balance is refunded to the owner on release.
     pub hashed_beneficiaries: Vec<HashedBeneficiary>,
     /// How many days the owner may go without checking in before the will
     /// can be triggered.
@@ -210,7 +255,9 @@ pub struct Will {
     /// via a weight-based quorum using `guardian_trigger`.
     pub guardians: Vec<Guardian>,
     /// Accumulated weight of guardian votes cast in the current cycle.
-    /// Release triggers when this reaches `guardian_threshold`.
+    /// Quorum is reached when this reaches (or exceeds) `guardian_threshold`;
+    /// see [`Will::guardian_threshold`] for the comparison and
+    /// [`Will::guardian_votes`] for the corresponding head count.
     pub guardian_vote_weight: u32,
     /// Number of distinct guardians who have voted to trigger the current
     /// guardian-release cycle.
@@ -221,8 +268,23 @@ pub struct Will {
     pub guardian_cancel_vote_weight: u32,
     /// Number of distinct guardians who have voted to cancel the current trigger.
     pub guardian_cancel_votes: u32,
-    /// Number of distinct guardian votes required to force an early release.
-    /// Must be between 1 and `guardians.len()`.
+    /// The weight that a guardian quorum must accumulate to take effect.
+    ///
+    /// This is compared against the **accumulated vote weight**
+    /// ([`Will::guardian_vote_weight`], and
+    /// [`Will::guardian_cancel_vote_weight`] for the cancel path), not against
+    /// [`Will::guardian_votes`]. With every guardian weighted 1 the two are
+    /// equivalent, but a weighted guardian list installed via
+    /// `update_guardians_weighted` lets a single guardian of weight 3 satisfy a
+    /// threshold of 3 on its own.
+    ///
+    /// It is validated in `1..=total_weight`, where `total_weight` is
+    /// `guardians.len()` for the unweighted lists that `create_will`,
+    /// `update_guardians` and `update_will_settings` produce, and the sum of
+    /// the supplied weights for a weighted list. Shrinking a non-empty guardian
+    /// list below the stored threshold is rejected, since the quorum would
+    /// become unreachable. An empty guardian list disables the mechanism and no
+    /// threshold is checked.
     pub guardian_threshold: u32,
     /// Unix timestamp (seconds) of the last guardian-list change.
     /// `guardian_trigger` is only effective after a cooldown period has
