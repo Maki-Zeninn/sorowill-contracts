@@ -65,6 +65,20 @@ const BUMP_AMOUNT: u32 = DAY_IN_LEDGERS * 60;
 /// Seconds in a day, used to convert day-denominated expiry windows.
 const SECONDS_PER_DAY: u64 = 86_400;
 
+/// Current on-chain schema version stamped into every `Will`.
+///
+/// This is the **single source of truth** for the schema version. It lives
+/// here, next to the `DataKey` enum and the save/load helpers that write
+/// `Will::schema_version`, and is re-exported at the crate root as
+/// `crate::CURRENT_SCHEMA_VERSION` so entry points and tests have one
+/// import path.
+///
+/// Bump this constant only together with an actual v(n) -> v(n + 1)
+/// transformation in `WillContract::migrate_will`; a bump on its own would
+/// make `migrate_will` no-op on every will and the version stamp would stop
+/// meaning anything (#367).
+pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+
 #[contracttype]
 #[derive(Clone)]
 pub(crate) enum DataKey {
