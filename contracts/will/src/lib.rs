@@ -130,6 +130,28 @@ mod issue_357_test;
 #[cfg(test)]
 mod issue_414_test;
 
+/// Regression test for issue #424: `get_time_until_deadline` returns a
+/// negative `i64` (not a huge wrapped value) when the deadline is in the past.
+#[cfg(test)]
+mod issue_424_test;
+
+/// Regression tests for issue #425: guardian-vote invariant after
+/// `guardian_cancel_trigger` reaches quorum — vote state is cleared but the
+/// guardian list and threshold are preserved for subsequent voting cycles.
+#[cfg(test)]
+mod issue_425_test;
+
+/// Regression tests for issue #426: `distribute` produces consistent payouts
+/// regardless of the order `Percentage` and `FixedAmount` beneficiaries appear
+/// in the list.
+#[cfg(test)]
+mod issue_426_test;
+
+/// Regression tests for issue #427: `get_protocol_stats().total_locked_by_token`
+/// stays consistent across create / top-up / cancel / release operations.
+#[cfg(test)]
+mod issue_427_test;
+
 /// Regression test for issue #184: `merge_wills` refuses mismatched primary tokens.
 #[cfg(test)]
 mod issue_184_test;
