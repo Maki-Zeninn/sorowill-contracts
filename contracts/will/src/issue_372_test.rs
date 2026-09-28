@@ -131,7 +131,7 @@ fn repeated_release_votes_across_an_expiry_window_cannot_reach_the_threshold() {
 /// can never return the will to `Active` on their own.
 #[test]
 fn a_cancel_quorum_cannot_rewind_a_will_past_its_grace_period() {
-    let (env, contract_id, guardian_a, _guardian_b, will_id) = setup();
+    let (env, contract_id, guardian_a, guardian_b, will_id) = setup();
     let client = WillContractClient::new(&env, &contract_id);
 
     trigger(&env, &client, will_id);

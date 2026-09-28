@@ -127,6 +127,11 @@ mod issue_355_test;
 mod issue_356_test;
 #[cfg(test)]
 mod issue_357_test;
+/// Regression tests for issues #378-#381: keeper-bounty token selection,
+/// guardian dedup by address, hashed beneficiaries in a merge, and the merge
+/// status transitions.
+#[cfg(test)]
+mod issue_378_381_test;
 #[cfg(test)]
 mod issue_414_test;
 
@@ -2940,10 +2945,22 @@ impl WillContract {
     /// - Beneficiaries from both wills are merged, with percentages recalculated
     ///   proportionally based on the combined balance. If a beneficiary appears
     ///   in both wills, their percentages are summed first, then recalculated.
-    /// - Guardians from both wills are combined into a single list (up to MAX_GUARDIANS).
+    /// - Guardians are combined by **address** (#379). An address named on both
+    ///   wills yields a single entry: its weight becomes the greater of the two
+    ///   (so the surviving will's already-validated `guardian_threshold` stays
+    ///   reachable, and the weight is still counted exactly once toward quorum),
+    ///   and its consent becomes the more advanced of the two, ranked `Accepted`
+    ///   > `Pending` > `Rejected`. A guardian `Rejected` on both wills stays
+    ///   `Rejected` and cannot vote until the owner re-appoints them through
+    ///   `update_guardians`.
     /// - Check-in period: use the minimum (most conservative).
     /// - Grace period: use the maximum (most conservative).
     /// - The consumed will (will_id_b) is marked as Cancelled with zero balance.
+    ///
+    /// Both wills record a `merge` transition: the survivor as `Active` ->
+    /// `Active` (a merge rewrites its balance, beneficiaries, guardians and
+    /// periods) and the consumed will as `Active` -> `Cancelled`, so
+    /// `get_will_history` shows why its balance moved (#381).
     ///
     /// # Parameters
     /// - `owner`: the owner of both wills; must authorize this call.
@@ -2954,6 +2971,15 @@ impl WillContract {
     /// - [`WillError::NotOwner`] if `owner` does not own both wills.
     /// - [`WillError::WillNotBothActive`] if either will is not in `Active` status.
     /// - [`WillError::SameWillId`] if `will_id_a` equals `will_id_b`.
+    /// - [`WillError::MergeWithHashedBeneficiaries`] if either will still has a
+    ///   hashed beneficiary that has not revealed and claimed. Only *visible*
+    ///   beneficiaries are merged, so a commitment on the consumed will would
+    ///   otherwise be dropped along with its committed percentage while its
+    ///   balance moved to the survivor — stranding that beneficiary's claim —
+    ///   and the survivor's percentages would then apply to the larger combined
+    ///   balance (#380). The owner must let every commitment reveal and claim
+    ///   first (or cancel that will) and then merge. Hashed entries that have
+    ///   already claimed are inert and do not block a merge.
     /// - [`WillError::MergeWouldExceedLimits`] if merging would exceed MAX_BENEFICIARIES or MAX_GUARDIANS limits.
     /// - [`WillError::InvalidPercentages`] if recalculating percentages fails.
     pub fn merge_wills(env: Env, owner: Address, will_id_a: u64, will_id_b: u64) {
@@ -2986,6 +3012,26 @@ impl WillContract {
             panic_with_error!(&env, WillError::PrimaryTokenMismatch);
         }
 
+        // A merge cannot carry hashed beneficiaries across. `merge_beneficiaries`
+        // only merges *visible* beneficiaries, so the consumed will's
+        // commitments and their committed percentages would be dropped while
+        // its balance moved to the survivor: those beneficiaries would lose
+        // their claim with no error, and the survivor's existing percentages
+        // would apply to the larger combined balance (#380).
+        //
+        // Rather than silently re-basing a commitment's percentage against a
+        // balance the beneficiary never agreed to, the merge is rejected while
+        // either will still has an unrevealed hashed beneficiary. The owner
+        // must let every commitment reveal and claim first (or cancel the will)
+        // and then merge. Hashed entries that have already been claimed are
+        // inert — their share has been paid out and only the flag remains — so
+        // they do not block a merge.
+        if unclaimed_hashed_bps(&will_a.hashed_beneficiaries) > 0
+            || unclaimed_hashed_bps(&will_b.hashed_beneficiaries) > 0
+        {
+            panic_with_error!(&env, WillError::MergeWithHashedBeneficiaries);
+        }
+
         // Merge beneficiaries with proportional recalculation
         let merged_beneficiaries = merge_beneficiaries(&env, &will_a, &will_b);
 
@@ -2993,10 +3039,48 @@ impl WillContract {
             panic_with_error!(&env, WillError::MergeWouldExceedLimits);
         }
 
-        // Merge guardians (unique)
-        let mut merged_guardians = will_a.guardians.clone();
+        // Merge guardians, matching on **address** only. Comparing whole
+        // `Guardian` structs treated the same address as two entries whenever
+        // the two wills recorded a different weight or consent for it, so a
+        // guardian listed in both wills was appended twice — breaking the
+        // no-duplicate-guardian rule `assert_valid_guardians` enforces on
+        // every creation path and double-counting that guardian's weight
+        // toward quorum (#379).
+        //
+        // When both wills name the same address, the entries are combined by
+        // this documented rule:
+        //
+        // - **weight**: the greater of the two. Each will's threshold was
+        //   validated against that will's own weights, so dropping either
+        //   one could leave the surviving will's `guardian_threshold`
+        //   unreachable; the larger weight keeps the surviving threshold
+        //   satisfiable and is still a single entry, so the guardian's
+        //   weight is counted exactly once.
+        // - **consent**: the more advanced of the two, ranked `Accepted` >
+        //   `Pending` > `Rejected`. A guardian who accepted the role on
+        //   either will has consented; a guardian who is `Rejected` on both
+        //   stays `Rejected`, which is terminal for them and keeps them out
+        //   of the vote.
+        let mut merged_guardians: Vec<Guardian> = Vec::new(&env);
+        for guardian in will_a.guardians.iter() {
+            merged_guardians.push_back(guardian);
+        }
         for guardian in will_b.guardians.iter() {
-            if !merged_guardians.contains(&guardian) {
+            let mut found = false;
+            for i in 0..merged_guardians.len() {
+                let existing = merged_guardians.get_unchecked(i);
+                if existing.address == guardian.address {
+                    found = true;
+                    let merged = Guardian {
+                        address: existing.address.clone(),
+                        weight: existing.weight.max(guardian.weight),
+                        consent: more_advanced_consent(existing.consent, guardian.consent),
+                    };
+                    merged_guardians.set(i, merged);
+                    break;
+                }
+            }
+            if !found {
                 merged_guardians.push_back(guardian);
             }
         }
@@ -3069,6 +3153,38 @@ impl WillContract {
         // Save both wills
         storage::save_will(&env, &will_a);
         storage::save_will(&env, &will_b);
+
+        // Record the status change on the consumed will (#381). The consumed
+        // will really does move `Active` → `Cancelled` here, so its audit
+        // trail must say so: without this entry `get_will_history` showed only
+        // the will's `create` transition, making a merge indistinguishable
+        // from a will that had simply been left alone, and hiding the reason
+        // the balance moved to another will. `cancel_will`, `trigger_will`,
+        // `release_inheritance` and the guardian paths all record theirs.
+        record_transition(
+            &env,
+            will_id_b,
+            WillStatus::Active,
+            WillStatus::Cancelled,
+            &owner,
+            symbol_short!("merge"),
+        );
+
+        // The survivor keeps its `Active` status, so this is an `Active` →
+        // `Active` entry of the same kind `create_will` and `split_will`
+        // record. A merge rewrites the survivor's balance, beneficiaries,
+        // guardians and periods, and those mutations are what the trail exists
+        // to describe — without an entry, the surviving will's history would
+        // jump straight from `create` to its eventual release with no hint
+        // that a second will's funds and beneficiaries were folded into it.
+        record_transition(
+            &env,
+            will_id_a,
+            WillStatus::Active,
+            WillStatus::Active,
+            &owner,
+            symbol_short!("merge"),
+        );
 
         // Update beneficiary indexes for will_a
         for beneficiary in will_a.beneficiaries.iter() {
@@ -4145,9 +4261,12 @@ pub(crate) fn proportional_share(total: i128, basis_points: u32) -> i128 {
 ///
 /// For each token in `will.balances` the balance is split as follows:
 ///
-/// 1. The keeper bounty (`will.keeper_bounty_bps`), taken out of the first
-///    token with a non-zero balance, when a non-owner keeper released the
-///    will (#297).
+/// 1. The keeper bounty (`will.keeper_bounty_bps`), taken out of a single
+///    token, when a non-owner keeper released the will (#297). The token is
+///    chosen once, up front, as the first entry of `will.balances` whose
+///    bounty share rounds above zero; that same token is both reduced to make
+///    room and used to pay the keeper (#378). If no token's share rounds
+///    above zero, no bounty is paid and no beneficiary share is reduced.
 /// 2. The reserve for hashed beneficiaries that have not yet called
 ///    `reveal_and_claim` (#181/#186). It is withheld from the visible
 ///    beneficiaries and left in `will.balances` for later claiming.
@@ -4198,12 +4317,42 @@ fn distribute(env: &Env, will: &mut Will, keeper: &Option<Address>) {
     let token_count = will.balances.len();
 
     // --- COMPUTE: calculate every share from the current (pre-mutation) balances ---
-    // Calculate keeper bounty if applicable (not paid to owner, only to other keepers)
-    let mut bounty_amount: i128 = 0;
+    // A keeper bounty is due only to a caller other than the owner.
     let should_pay_bounty = keeper
         .as_ref()
         .map(|k| k != &will.owner && will.keeper_bounty_bps > 0)
         .unwrap_or(false);
+
+    // Pick the single token the bounty is computed from *and* paid out of,
+    // before any per-token math runs (#378). Previously the bounty was
+    // computed inside the per-token loop under a `bounty_amount == 0` guard
+    // while the payout happened in the first entry of `transfer_plan`: on a
+    // multi-token will whose first token's bounty rounded to zero, the amount
+    // was computed against a *later* token but transferred with the *first*
+    // token's client — and that first token's balance had never been reduced
+    // to make room, so the keeper was paid out of beneficiaries' funds or the
+    // whole release aborted. Choosing the token up front and keying both the
+    // deduction and the payment off the same address makes the two impossible
+    // to desynchronise.
+    //
+    // Rounding: the bounty is `floor(balance * keeper_bounty_bps / 10_000)`
+    // through [`proportional_share`], so a token too small for the share to
+    // round above zero contributes nothing and is skipped. If *every* token
+    // rounds to zero, no bounty is paid at all and no beneficiary share is
+    // reduced — the tokens are distributed in full.
+    let mut bounty_token: Option<(Address, i128)> = None;
+    if should_pay_bounty {
+        for (token_addr, total) in will.balances.iter() {
+            if total == 0 {
+                continue;
+            }
+            let amount = proportional_share(total, will.keeper_bounty_bps);
+            if amount > 0 {
+                bounty_token = Some((token_addr, amount));
+                break;
+            }
+        }
+    }
 
     // Build a Vec of (token_addr, Vec<(beneficiary_addr, share)>) so we can
     // commit all state before any external call fires.
@@ -4237,11 +4386,14 @@ fn distribute(env: &Env, will: &mut Will, keeper: &Option<Address>) {
             continue;
         }
 
-        // Calculate bounty from first token's balance if applicable
+        // Deduct the keeper bounty only from the token it was computed from.
+        // Comparing the address (rather than relying on iteration position)
+        // keeps the deduction and the payout tied to the same token (#378).
         let mut available = total;
-        if should_pay_bounty && bounty_amount == 0 {
-            bounty_amount = proportional_share(total, will.keeper_bounty_bps);
-            available = (total - bounty_amount).max(0);
+        if let Some((bounty_addr, bounty_amount)) = &bounty_token {
+            if bounty_addr == &token_addr {
+                available = (total - bounty_amount).max(0);
+            }
         }
 
         if hashed_bps > 0 {
@@ -4338,17 +4490,36 @@ fn distribute(env: &Env, will: &mut Will, keeper: &Option<Address>) {
             }
         }
 
-        // Pay keeper bounty from first token if applicable
-        if should_pay_bounty && bounty_amount > 0 {
-            if let Some(keeper_addr) = keeper {
-                token_client.transfer(&contract_address, keeper_addr, &bounty_amount);
-                events::keeper_bounty_paid(env, will.id, keeper_addr, bounty_amount);
+        // Pay the keeper bounty out of the very token it was computed from,
+        // whose balance was reduced to make room for it above (#378).
+        if let (Some((bounty_addr, bounty_amount)), Some(keeper_addr)) = (&bounty_token, keeper) {
+            if bounty_addr == &token_addr && *bounty_amount > 0 {
+                token_client.transfer(&contract_address, keeper_addr, bounty_amount);
+                events::keeper_bounty_paid(env, will.id, keeper_addr, *bounty_amount);
             }
-            bounty_amount = 0; // Only pay once
         }
     }
 
     events::inheritance_released(env, will.id, token_count, count);
+}
+
+/// Combines the two `GuardianConsent` states recorded for one guardian address
+/// across two source wills into the state the merged will carries (#379).
+///
+/// The merge takes the *more advanced* state, ranked `Accepted` > `Pending` >
+/// `Rejected`: a guardian who accepted the role on either will has consented
+/// to it and may vote on the merged will, while a guardian who declined on
+/// both stays `Rejected` — terminal for them, keeping them out of the vote
+/// until the owner re-appoints them through `update_guardians`.
+fn more_advanced_consent(a: GuardianConsent, b: GuardianConsent) -> GuardianConsent {
+    match (a, b) {
+        (GuardianConsent::Rejected, GuardianConsent::Rejected) => GuardianConsent::Rejected,
+        (GuardianConsent::Rejected, _) | (_, GuardianConsent::Rejected) => GuardianConsent::Pending,
+        (GuardianConsent::Accepted, _) | (_, GuardianConsent::Accepted) => {
+            GuardianConsent::Accepted
+        }
+        _ => GuardianConsent::Pending,
+    }
 }
 
 /// Copies a will's guardian list onto a derived will, resetting every

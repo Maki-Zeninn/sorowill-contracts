@@ -279,6 +279,10 @@ disambiguate.
 | 43 | `InvalidPreimageLength` | `reveal_and_claim` was called with a pre-image that is not exactly 32 bytes, so its SHA-256 could never match a stored commitment. |
 | 44 | `InvalidCommitmentLength` | A hashed-beneficiary commitment was not exactly 32 bytes (a SHA-256 digest) and could never be matched by a pre-image. |
 | 45 | `DuplicateCommitment` | The same commitment hash is already registered on the will, making the second slot unreachable. |
+| 46 | `PreimageAddressMismatch` | A `reveal_and_claim` pre-image was not bound to the `claimant` address, so a third party could replay it and take the reserved share. |
+| 47 | `MergeWithHashedBeneficiaries` | `merge_wills` was called while either will still had an unrevealed hashed beneficiary, whose committed percentage a merge cannot carry across. |
+| 48 | `DuplicateWillId` | A `batch_check_in` `will_ids` list named the same will more than once. |
+| 49 | `InvalidConsentTransition` | `accept_guardian_role` was called by a guardian who had already `Rejected` the role, which is terminal. |
 
 ## Contract spec artifact
 
