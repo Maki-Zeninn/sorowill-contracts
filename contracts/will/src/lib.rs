@@ -688,6 +688,7 @@ impl WillContract {
         // map (rather than re-reading the first `tokens` entry) so `balance`
         // can never disagree with `balances[token]` (#350).
         let (primary_token, _) = tokens.get_unchecked(0);
+        let primary_amount = primary_token_balance(&balances, &primary_token);
 
         let will = Will {
             id: will_id,
@@ -695,7 +696,7 @@ impl WillContract {
             balances,
             token: primary_token,
             is_native: false,
-            balance: primary_balance,
+            balance: primary_amount,
             beneficiaries,
             hashed_beneficiaries: Vec::new(&env),
             checkin_period_days,
@@ -2831,6 +2832,7 @@ impl WillContract {
             }
 
             let (primary_token, _) = tokens.get_unchecked(0);
+            let primary_amount = primary_token_balance(&balances, &primary_token);
 
             let will = Will {
                 id: will_id,
@@ -2838,7 +2840,7 @@ impl WillContract {
                 balances,
                 token: primary_token,
                 is_native: false,
-                balance: primary_balance,
+                balance: primary_amount,
                 beneficiaries,
                 hashed_beneficiaries: Vec::new(&env),
                 checkin_period_days,
@@ -4086,22 +4088,6 @@ fn primary_token_balance(balances: &Map<Address, i128>, primary_token: &Address)
     balances.get(primary_token.clone()).unwrap_or(0)
 }
 
-/// Sums every token balance in `balances` into a single `i128`, saturating
-/// rather than overflowing.
-///
-/// Used by `merge_beneficiaries` to weigh each will by its combined value
-/// across every token it holds, so a non-primary token is no longer ignored
-/// when merged percentages are derived (#382). Note this is deliberately *not*
-/// the value `Allocation::FixedAmount` entries are validated against — see
-/// [`primary_token_balance`] (#384).
-fn total_balance(balances: &Map<Address, i128>) -> i128 {
-    let mut total: i128 = 0;
-    for (_, amount) in balances.iter() {
-        total = total.saturating_add(amount);
-    }
-    total
-}
-
 /// Asserts a guardian list is no longer than [`MAX_GUARDIANS`] and contains no
 /// repeated address. Also validates that the owner is not in the guardian list.
 ///
@@ -4363,6 +4349,26 @@ fn distribute(env: &Env, will: &mut Will, keeper: &Option<Address>) {
     }
 
     events::inheritance_released(env, will.id, token_count, count);
+}
+
+/// Copies a will's guardian list onto a derived will, resetting every
+/// guardian's consent to [`GuardianConsent::Pending`] while preserving
+/// addresses and vote weights.
+///
+/// `clone_will` and `split_will` hand the owner a brand-new will the guardian
+/// never agreed to, so consent recorded on the source must not carry over
+/// (#375) — a guardian has to be asked about the child before they can vote
+/// on it, exactly as on a freshly created will.
+fn reset_guardian_consent(env: &Env, guardians: &Vec<Guardian>) -> Vec<Guardian> {
+    let mut reset: Vec<Guardian> = Vec::new(env);
+    for g in guardians.iter() {
+        reset.push_back(Guardian {
+            address: g.address.clone(),
+            weight: g.weight,
+            consent: GuardianConsent::Pending,
+        });
+    }
+    reset
 }
 
 /// Combines two `Allocation`s recorded for the same beneficiary across two

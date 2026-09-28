@@ -170,4 +170,15 @@ pub enum WillError {
     /// address as `claimant` and take the reserved share before the real
     /// beneficiary does (#369).
     PreimageAddressMismatch = 46,
+    /// A `batch_check_in` `will_ids` list named the same will more than once,
+    /// so one will would otherwise be processed — and emit a redundant
+    /// `check_in` event — up to `MAX_BATCH_CHECK_IN` times in a single call,
+    /// making the reported count meaningless (#355).
+    DuplicateWillId = 48,
+    /// `accept_guardian_role` was called by a guardian who had already
+    /// `Rejected` the role. `Rejected` is terminal for a guardian entry: they
+    /// can only be asked again if the owner re-appoints them through
+    /// `update_guardians` / `update_guardians_weighted`, which resets the list
+    /// to `Pending` (#374).
+    InvalidConsentTransition = 49,
 }
