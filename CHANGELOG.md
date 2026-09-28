@@ -12,6 +12,18 @@ gets its own [contract spec artifact](./spec) once exported.
 
 ### Added
 
+- `WillError::MergeWithHashedBeneficiaries` (code 47): `merge_wills` is now
+  rejected while either will still carries a hashed beneficiary that has not
+  revealed and claimed. `merge_beneficiaries` only merges *visible*
+  beneficiaries, so the consumed will's commitments and their committed
+  percentages were silently dropped while its balance moved to the survivor,
+  and the survivor's existing percentages then applied to the larger combined
+  balance. Claimed hashed entries are inert and do not block a merge (#380).
+- `merge_wills` now records a `merge` transition for **both** wills. The
+  consumed will moves `Active` → `Cancelled` and previously recorded nothing,
+  so `get_will_history` showed only its creation; the survivor records an
+  `Active` → `Active` entry describing the merge that rewrote its balance,
+  beneficiaries, guardians and periods (#381).
 - `WillError::DuplicateWillId` (code 45): `batch_check_in` now rejects a
   `will_ids` list that names the same will twice, instead of processing the
   repeat and emitting a redundant `check_in` event for it (#355). `README.md`
@@ -34,6 +46,27 @@ gets its own [contract spec artifact](./spec) once exported.
 
 ### Changed
 
+- `merge_wills` now combines the two guardian lists by **address** instead of
+  comparing whole `Guardian` structs. The same address recorded with a
+  different weight or consent on each will compared unequal and was appended
+  twice, breaking the no-duplicate-guardian rule `assert_valid_guardians`
+  enforces on every creation path and double-counting that guardian's weight
+  toward quorum. A shared address now yields one entry whose weight is the
+  greater of the two — keeping the surviving will's validated
+  `guardian_threshold` reachable while counting the weight exactly once — and
+  whose consent is the more advanced of the two (`Accepted` > `Pending` >
+  `Rejected`) (#379).
+- The keeper bounty in `distribute` is now computed from and paid out of the
+  **same** token, chosen up front as the first entry of `will.balances` whose
+  bounty share rounds above zero. Previously the amount was computed against
+  whichever token first produced a non-zero share while the payout used the
+  first entry of `transfer_plan`; on a multi-token will whose first token's
+  share rounded to zero, the keeper was paid with the wrong token's client out
+  of a balance that had never been reduced — taking the funds from other
+  beneficiaries, or aborting the release. Rounding: the bounty is
+  `floor(balance * keeper_bounty_bps / 10_000)`, so a token too small to round
+  above zero is skipped, and if no token rounds above zero no bounty is paid
+  and no beneficiary share is reduced (#378).
 - Corrected the `WillError` docs for `FixedAmountExceedsBalance`,
   `InvalidGuardianThreshold` and `TooManyBeneficiaries` so each states exactly
   when it is raised. The wording is generated into the SDK and client error

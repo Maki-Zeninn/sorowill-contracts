@@ -112,6 +112,10 @@
     { "code": 42, "name": "InvalidTokenCount" },
     { "code": 43, "name": "InvalidPreimageLength" },
     { "code": 44, "name": "InvalidCommitmentLength" },
-    { "code": 45, "name": "DuplicateCommitment" }
+    { "code": 45, "name": "DuplicateCommitment" },
+    { "code": 46, "name": "PreimageAddressMismatch" },
+    { "code": 47, "name": "MergeWithHashedBeneficiaries" },
+    { "code": 48, "name": "DuplicateWillId" },
+    { "code": 49, "name": "InvalidConsentTransition" }
   ]
 }
