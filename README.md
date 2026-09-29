@@ -106,13 +106,40 @@ The following limits are defined as `pub const` in `lib.rs` and re-exported from
 
 | Constant | Value | Meaning |
 |---|---|---|
-| `MAX_BENEFICIARIES` | `10` | Maximum number of beneficiaries per will |
+| `MAX_BENEFICIARIES` | `10` | Maximum number of beneficiaries per will — see [the FAQ](#faq-why-is-there-a-beneficiary-limit) |
 | `MAX_GUARDIANS` | `3` | Maximum number of guardians per will |
 | `GUARDIAN_THRESHOLD` | `2` | Default number of guardian votes required to force an early release |
 
 ```rust
 use will::{MAX_BENEFICIARIES, MAX_GUARDIANS, GUARDIAN_THRESHOLD};
 ```
+
+> **Beneficiary limit:** a will can name at most **10 beneficiaries**.
+> `create_will`, `batch_create_wills`, `update_beneficiaries` and
+> `update_will_settings` reject an 11th with `TooManyBeneficiaries` (code `12`);
+> `merge_wills` rejects a merge that would exceed it with
+> `MergeWouldExceedLimits` (code `16`). The diagnostic log records the
+> supplied count and the limit, so it shows up when you simulate the
+> transaction. Validate the list length client-side before submitting.
+
+### FAQ: why is there a beneficiary limit?
+
+`release_inheritance` pays every beneficiary in **one transaction**, with one
+token transfer per beneficiary and token. Soroban caps the CPU instructions,
+memory and ledger entries a single transaction may use. If the list had no
+upper bound, a will could grow until its release no longer fits in those
+limits. At that point nobody could release the funds, and they would stay
+locked for good. Ten beneficiaries, combined with `MAX_TOKENS` tokens, stays
+comfortably inside the budget measured in
+[docs/RESOURCE_COSTS.md](./docs/RESOURCE_COSTS.md).
+
+If you need more than 10 heirs, you can:
+
+- **Split across several wills.** Create more than one will, each with at most
+  10 beneficiaries, or use `split_will` on an existing one.
+- **Nest the distribution.** Name an intermediary address, such as a
+  multisig or another contract, as a single beneficiary and distribute
+  further from there.
 
 ## Contract Functions
 
@@ -129,7 +156,8 @@ use will::{MAX_BENEFICIARIES, MAX_GUARDIANS, GUARDIAN_THRESHOLD};
 | `get_will` | Reads the full state of a will | `will_id` | `Will` |
 | `get_will_status` | Reads only a will's lifecycle status, without loading the rest of the struct | `will_id` | `WillStatus` |
 | `get_time_until_deadline` | Seconds until the will's next relevant deadline (check-in or grace period); negative if past due, `None` if not applicable to the current status | `will_id` | `Option<i64>` |
-| `get_wills_by_owner` | Lists every will owned by an address | `owner` | `Vec<Will>` |
+| `get_wills_by_owner` | Lists a page of wills owned by an address | `owner`, `cursor`, `limit` | `Vec<Will>` |
+| `get_owner_stats` | Aggregate stats for an owner: total wills, non-terminal wills, and locked value per token across all their wills | `owner` | `OwnerStats` |
 | `get_wills_by_beneficiary` | Lists every will an address is named in | `beneficiary` | `Vec<Will>` |
 | `guardian_trigger` | Casts a guardian vote; 2 of 3 forces an early release | `will_id`, `guardian` | — |
 
@@ -185,7 +213,7 @@ disambiguate.
 | 9 | `NotGuardian` | The caller is not a designated guardian of this will. |
 | 10 | `CheckinNotDue` | `trigger_will` was called before the check-in deadline passed. |
 | 11 | `ZeroAmount` | An amount of zero (or less) was supplied where a positive amount is required. |
-| 12 | `TooManyBeneficiaries` | Too many beneficiaries (or guardians) were supplied. |
+| 12 | `TooManyBeneficiaries` | The beneficiary list was empty or exceeded `MAX_BENEFICIARIES` (10), or the guardian/token list exceeded its cap. See [the FAQ](#faq-why-is-there-a-beneficiary-limit). |
 | 13 | `WillNotSettled` | The requested action requires the will to be `Released` or `Cancelled`. |
 | 14 | `WillNotBothActive` | Both wills in a merge must be `Active`. |
 | 15 | `SameWillId` | The same will id was supplied for both sides of a merge. |
@@ -211,6 +239,8 @@ disambiguate.
 | 35 | `InvalidPreimage` | `reveal_and_claim` was called with a pre-image that does not match any stored `HashedBeneficiary` commitment on the will. |
 | 36 | `AlreadyClaimed` | `reveal_and_claim` was called for a hashed beneficiary slot that has already been claimed. |
 | 37 | `TooManyWills` | An owner or beneficiary index list is already at `MAX_WILLS_PER_INDEX` and cannot accept another will id. |
+| 38 | `GuardianNotConsented` | A guardian has not accepted their role and cannot vote. |
+| 39 | `UnsupportedSchemaVersion` | A stored will matches neither the current `Will` layout nor any known legacy layout. |
 
 ## Contract spec artifact
 
